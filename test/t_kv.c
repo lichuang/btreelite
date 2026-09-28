@@ -159,6 +159,42 @@ int main(void){
     }
   }
 
+  /* ---- Key length limit: exactly MAX_KEY ok, one more rejected ---- */
+  {
+    char maxkey[BTREELITE_MAX_KEY+1];
+    memset(maxkey, 'm', sizeof(maxkey));
+    rc = btreelite_begin(db, 1);
+    CHECK(rc==0);
+    rc = btreelite_cursor_open(db, iRoot, 1, &cur);
+    CHECK(rc==0);
+    rc = btreelite_put(cur, maxkey, BTREELITE_MAX_KEY, "v", 1);
+    CHECK(rc==0);
+    rc = btreelite_put(cur, maxkey, BTREELITE_MAX_KEY+1, "v", 1);
+    CHECK(rc==BTREELITE_TOOBIG);
+    rc = btreelite_get(cur, maxkey, BTREELITE_MAX_KEY+1);
+    CHECK(rc==BTREELITE_TOOBIG);
+    rc = btreelite_commit(db);
+    CHECK(rc==0);
+    btreelite_cursor_close(cur);
+    rc = btreelite_begin(db, 0);
+    CHECK(rc==0);
+    rc = btreelite_cursor_open(db, iRoot, 0, &cur);
+    CHECK(rc==0);
+    rc = btreelite_get(cur, maxkey, BTREELITE_MAX_KEY);
+    CHECK(rc==0);
+    {
+      uint32_t nVal=0; int nLen=0; char got[BTREELITE_MAX_KEY+1];
+      rc = btreelite_key(cur, got, sizeof(got), &nLen);
+      CHECK(rc==0 && nLen==BTREELITE_MAX_KEY);
+      CHECK(memcmp(got, maxkey, BTREELITE_MAX_KEY)==0);
+      rc = btreelite_value_size(cur, &nVal);
+      CHECK(rc==0 && nVal==1);
+    }
+    btreelite_cursor_close(cur);
+    btreelite_commit(db);
+    cur = 0;
+  }
+
   btreelite_cursor_close(cur);
   btreelite_close(db);
   unlink("t_kv.db");

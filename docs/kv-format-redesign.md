@@ -200,6 +200,8 @@ KV 不用 `TableMoveto`；`btreeMoveto` 的 `pKey==0` 分支仅 intkey 用。保
 
 ## 7. 兼容性
 
-- KV 文件与 SQLite 不兼容（页类型字节相同但 cell 布局不同）。魔串替换
-  （README TODO 第 4 项）在同批完成，使 `sqlite3` CLI 拒绝该文件。
+- 文件魔串已从 `"SQLite format 3"` 改为 `"btreelite fmt 1"`（16 字节含 NUL），
+  因此 `sqlite3` CLI 与本库互相拒绝对方文件（`file is not a database`）。
+- `KV_MAX_KEY` = 255 已在 API 层强制（`BTREELITE_MAX_KEY` / `BTREELITE_TOOBIG`）；
+  超限的 put/get/del 返回错误码 18，而不是写入损坏的 cell。
 - 旧 KV 文件（index 家族格式）不向后兼容——项目未发布，无需迁移。

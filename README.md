@@ -59,9 +59,10 @@ values larger than one page.
       `sqlite3BtreeTableMoveto`, `BTREE_PREFORMAT`,
       `sqlite3BtreeTransferRow` and friends have no callers in a KV-only
       build. Deletion is mechanical (about 800 lines).
-- [ ] **Replace the file magic string** — the header still carries SQLite's
-      `"SQLite format 3"`; switch it to a project-specific string once the
-      KV cell format is frozen, so `sqlite3` CLI tools reject the file.
+- [x] **Replace the file magic string** — done.  The file header now begins
+      with `"btreelite fmt 1"` instead of `"SQLite format 3"`, so the
+      `sqlite3` CLI and library reject a btreelite file with
+      "file is not a database", and vice versa.
 
 ## License
 

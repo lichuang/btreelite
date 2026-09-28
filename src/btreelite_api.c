@@ -43,11 +43,23 @@ struct btreelite_cur {
 void btreelite_free(void *p){ sqlite3_free(p); }
 
 /*
+** Reject an out-of-range key length.  Keys live inline on the btree page,
+** so an over-long key would otherwise corrupt the cell.
+*/
+static int kvCheckKey(const void *k, int nK){
+  if( nK<0 || nK>BTREELITE_MAX_KEY ) return BTREELITE_TOOBIG;
+  if( nK>0 && k==0 ) return BTREELITE_ERROR;
+  return BTREELITE_OK;
+}
+
+/*
 ** Run one KV moveto.  The key is the raw byte string (k,nK); keys are held
 ** locally so this never touches an overflow page.  *pRes follows the
 ** sqlite3BtreeTableMoveto convention.
 */
 static int kvMoveto(btreelite_cur *c, const void *k, int nK, int *pRes){
+  int rc = kvCheckKey(k, nK);
+  if( rc!=BTREELITE_OK ) return rc;
   return sqlite3BtreeKvMoveto(c->pCur, k, nK, 0, pRes);
 }
 
@@ -178,6 +190,9 @@ int btreelite_put(btreelite_cur *c, const void *k, int nK,
   BtreePayload x;
   int rc, loc = 0;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
+  rc = kvCheckKey(k, nK);
+  if( rc!=BTREELITE_OK ) return rc;
+  if( nV<0 || (nV>0 && v==0) ) return BTREELITE_ERROR;
   /* Locate the insertion point; the returned value is the seekResult
   ** sqlite3BtreeInsert expects. */
   rc = kvMoveto(c, k, nK, &loc);

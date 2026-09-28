@@ -40,7 +40,16 @@ extern "C" {
 #define BTREELITE_NOMEM         7    /* Out of memory */
 #define BTREELITE_INTERRUPT     9    /* Operation terminated by interrupt */
 #define BTREELITE_BUSY_SNAPSHOT 517  /* WAL: database changed under us */
+#define BTREELITE_TOOBIG        18   /* Key exceeds BTREELITE_MAX_KEY */
 #define BTREELITE_DONE          101  /* Cursor is at the end/beginning */
+
+/*
+** Maximum key length, in bytes.  Keys are stored inline on the btree page
+** (they never spill to overflow pages), so their length is bounded by the
+** free space in a leaf cell.  A key longer than this is rejected with
+** BTREELITE_TOOBIG rather than corrupting the page.
+*/
+#define BTREELITE_MAX_KEY 255
 
 typedef struct btreelite_db btreelite_db;     /* opaque database handle */
 typedef struct btreelite_cur btreelite_cur;   /* opaque cursor handle */
@@ -150,13 +159,15 @@ void btreelite_cursor_close(btreelite_cur *c);
 
 /*
 ** Position cursor c on the entry whose key equals (k,nK).
-** Returns BTREELITE_OK if found, BTREELITE_NOTFOUND if absent.
+** Returns BTREELITE_OK if found, BTREELITE_NOTFOUND if absent,
+** BTREELITE_TOOBIG if nK exceeds BTREELITE_MAX_KEY.
 */
 int btreelite_get(btreelite_cur *c, const void *k, int nK);
 
 /*
 ** Insert or overwrite the entry (k,nK) with value (v,nV).
-** nV may be 0 (value is an empty string).
+** nV may be 0 (value is an empty string).  Returns BTREELITE_TOOBIG if nK
+** exceeds BTREELITE_MAX_KEY.
 */
 int btreelite_put(btreelite_cur *c, const void *k, int nK,
                   const void *v, int nV);

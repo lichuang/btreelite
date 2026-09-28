@@ -17,7 +17,7 @@
 
 /*
 ** The header string that appears at the beginning of every
-** SQLite database.
+** btreelite database.
 */
 static const char zMagicHeader[] = SQLITE_FILE_HEADER;
 
