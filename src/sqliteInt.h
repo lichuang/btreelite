@@ -338,6 +338,7 @@ extern char *sqlite3_temp_directory;
 #define SQLITE_OMIT_TRACE 1
 
 /* bitvec.c API */
+typedef struct Bitvec Bitvec;
 int sqlite3BitvecTestNotNull(Bitvec*, u32);
 int sqlite3BitvecSet(Bitvec*, u32);
 void sqlite3BitvecClear(Bitvec*, u32, void*);
@@ -391,6 +392,9 @@ const char *sqlite3_uri_parameter(const char*, const char*);
 
 char *sqlite3_snprintf(int, char*, const char*, ...);
 int sqlite3GetBoolean(const char *z, int dflt);
+
+int sqlite3BtreeIndexMoveto(BtCursor*, UnpackedRecord*, int*);
+int sqlite3KvEncode(const void*, int, const void*, int, void**);
 
 /* VDBE record-compare entry points (vdbe.c in SQLite; memcmp-based
 ** implementations ship in the btreelite API layer). */

@@ -1056,9 +1056,6 @@ int sqlite3IsNaN(double);
 int sqlite3StrICmp(const char*,const char*);
 int sqlite3Strlen30(const char*);
 #define sqlite3Strlen30NN(C) (strlen(C)&0x3fffffff)
-int sqlite3Isdigit(u8);
-int sqlite3Isxdigit(u8);
-
 char *sqlite3MPrintf(sqlite3*,const char*, ...);
 char *sqlite3VMPrintf(sqlite3*,const char*, va_list);
 void sqlite3DebugPrintf(const char*, ...);

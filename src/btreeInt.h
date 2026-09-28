@@ -471,6 +471,7 @@ struct BtShared {
 #define BTS_NO_WAL           0x0020   /* Do not open write-ahead-log files */
 #define BTS_EXCLUSIVE        0x0040   /* pWriter has an exclusive lock */
 #define BTS_PENDING          0x0080   /* Waiting for read-locks to clear */
+#define BTS_KV               0x0100   /* btreelite: cells hold KV records */
 
 /*
 ** An instance of the following structure is used to hold information
@@ -483,6 +484,10 @@ struct CellInfo {
   u32 nPayload;  /* Bytes of payload */
   u16 nLocal;    /* Amount of payload held locally, not on overflow */
   u16 nSize;     /* Size of the cell content on the main b-tree page */
+  /* btreelite KV extension: in a KV tree the payload is [key][value]
+  ** concatenated; nKeyBytes records where the key ends and the value
+  ** begins.  Zero when the page is not a KV leaf. */
+  u32 nKeyBytes; /* Bytes of key at the start of the payload */
 };
 
 /*

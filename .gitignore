@@ -85,9 +85,12 @@ dist/
 # sqlite snapshot source (upstream reference, not part of the build)
 # sqlite-snapshot-*/
 
-# Test artifacts
-test/t_smoke
+# Test artifacts: compiled binaries (sources test/*.c are tracked) and
+# database/journal files created at run time
+test/t_*
+!test/t_*.c
 test/*.db
 test/*.db-journal
 test/*.db-wal
 test/*.db-shm
+test/*.dSYM

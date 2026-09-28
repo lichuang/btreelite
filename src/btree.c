@@ -1368,6 +1368,32 @@ static void btreeParseCellPtrIndex(
   pInfo->nKey = nPayload;
   pInfo->nPayload = nPayload;
   pInfo->pPayload = pIter;
+  /* btreelite KV trees: the cell payload is the KV record
+  ** [varint nKeyBytes][key][value], on leaves and interior dividers
+  ** alike, so index-btree cell handling is untouched.  Record where the
+  ** key ends so the value accessors can split the record. */
+  if( pPage->pBt && (pPage->pBt->btsFlags & BTS_KV)!=0 ){
+    u64 nKeyBytes = 0;
+    u8 *pKV = pIter;
+    if( nPayload>0 ){
+      nKeyBytes = *pKV;
+      if( nKeyBytes>=0x80 ){
+        u8 *pKEnd = &pKV[8];
+        nKeyBytes &= 0x7f;
+        do{
+          nKeyBytes = (nKeyBytes<<7) | (*++pKV & 0x7f);
+        }while( *(pKV)>=0x80 && pKV<pKEnd );
+      }
+      pKV++;
+      pInfo->nKeyBytes = (u32)nKeyBytes;
+      /* pPayload stays on the record start ([varint nKeyBytes][key][value]);
+      ** value accessors skip nKeyBytes to reach the value. */
+    }else{
+      pInfo->nKeyBytes = 0;
+    }
+  }else{
+    pInfo->nKeyBytes = 0;
+  }
   testcase( nPayload==pPage->maxLocal );
   testcase( nPayload==(u32)pPage->maxLocal+1 );
   assert( nPayload>=0 );
@@ -2803,6 +2829,10 @@ btree_open_out:
   }else{
     sqlite3_file *pFile;
 
+    /* btreelite is KV-only: every index-style cell payload carries a KV
+    ** record header.  The parse/size variants consult this flag. */
+    pBt->btsFlags |= BTS_KV;
+
     /* If the B-Tree was successfully opened, set the pager-cache size to the
     ** default value. Except, when opening on an existing shared pager-cache,
     ** do not change the pager-cache size.
@@ -3533,7 +3563,9 @@ static int newDatabase(BtShared *pBt){
   data[22] = 32;
   data[23] = 32;
   memset(&data[24], 0, 100-24);
-  zeroPage(pP1, PTF_INTKEY|PTF_LEAF|PTF_LEAFDATA );
+  /* btreelite is KV-only: the schema root is a leaf page of the index
+  ** (BLOBKEY) style, since every tree in the file holds KV records. */
+  zeroPage(pP1, PTF_ZERODATA|PTF_LEAF);
   pBt->btsFlags |= BTS_PAGESIZE_FIXED;
 #ifndef SQLITE_OMIT_AUTOVACUUM
   assert( pBt->autoVacuum==1 || pBt->autoVacuum==0 );

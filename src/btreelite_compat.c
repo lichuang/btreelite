@@ -242,15 +242,43 @@ void sqlite3ErrorMsg(Parse *pParse, const char *zFormat, ...){
 
 
 /*
-** Record-compare implementation: pKey1 is the record on the page, pPKey2
-** the search key.  Returns the SQLite three-way comparison result.
+** Decode the KV record header: pRec points at the payload of a KV cell
+** (the record [varint nKeyBytes][key][value]).  Stores the byte offset
+** of the key inside the record in *pnKOff and the key length in
+** *pnKey.  Returns the total record length.
+*/
+static int kvRecordDecode(const u8 *pRec, int nRec, int *pnKOff, int *pnKey){
+  u64 nKey = 0;
+  u8 *p = (u8*)pRec;
+  u8 *pEnd = &p[8];
+  if( nRec<=0 ) return 0;
+  nKey = *p;
+  if( nKey>=0x80 ){
+    nKey &= 0x7f;
+    do{
+      nKey = (nKey<<7) | (*++p & 0x7f);
+    }while( (*p)>=0x80 && p<pEnd );
+  }
+  p++;
+  *pnKOff = (int)(p - pRec);
+  *pnKey = (int)nKey;
+  return nRec;
+}
+
+/*
+** Record-compare implementation: pKey1 is the KV record stored in the
+** cell ([varint nKeyBytes][key][value]) and pPKey2 carries the raw
+** search key.  Compare key-vs-key only, with length tiebreak.
 */
 static int kvCompare(int nKey1, const void *pKey1, UnpackedRecord *pPKey2){
-  int nCmp = (pPKey2->n < nKey1) ? pPKey2->n : nKey1;
-  int c;
-  if( nKey1<0 || pPKey2->n<0 ) return 99;
-  c = memcmp(pKey1, pPKey2->u.z, (size_t)nCmp);
-  if( c==0 ) c = nKey1 - pPKey2->n;
+  int nKOff = 0, nKeyLen = 0, nCmp, c;
+  const u8 *pRec = (const u8*)pKey1;
+  if( pPKey2->n<0 ) return 99;
+  (void)kvRecordDecode(pRec, nKey1, &nKOff, &nKeyLen);
+  if( nKeyLen<0 || nKOff+nKeyLen>nKey1 ) return 99;
+  nCmp = (pPKey2->n < nKeyLen) ? pPKey2->n : nKeyLen;
+  c = memcmp(&pRec[nKOff], pPKey2->u.z, (size_t)nCmp);
+  if( c==0 ) c = nKeyLen - pPKey2->n;
   if( c<0 ) return -1;
   if( c>0 ) return +1;
   return 0;

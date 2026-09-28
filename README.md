@@ -27,7 +27,33 @@ The design and extraction plan is documented in
 
 ## Status
 
-Design and planning phase; implementation has not started yet.
+Implementation in progress. Phase 0 (build skeleton with SQL-free
+compilation), Phase 1 (decoupling the btree/pager/journal stack from the
+SQL layer) and Phase 2 (KV cell format plus the public API) are done; see
+[docs/phase.md](docs/phase.md) for the plan and
+[docs/phase0-report.md](docs/phase0-report.md),
+[docs/phase1-report.md](docs/phase1-report.md),
+[docs/phase2-report.md](docs/phase2-report.md) for the reports.
+
+## TODO
+
+- [ ] **Large values spanning overflow pages** — `put`/`get` of a value
+      larger than one page returns `CORRUPT`. The insert itself succeeds;
+      the failure is in the following `IndexMoveto` reposition over the
+      overflow chain (btree.c around the accessPayload/malloc branch,
+      page 2). Suspected cause: the overflow-chain page numbers and
+      `BtShared.nPage` are transiently inconsistent after a balance
+      reorder. Fix requires auditing the `nPage` maintenance ordering
+      across `fillInCell` and `balance_nonroot`.
+- [ ] **Remove the remaining autovacuum scaffolding** — `SQLITE_OMIT_AUTOVACUUM`
+      is defined, so this is unused-symbol and warning cleanup only.
+- [ ] **Remove the intkey-only code paths** — `btreeParseCellPtr`,
+      `sqlite3BtreeTableMoveto`, `BTREE_PREFORMAT`,
+      `sqlite3BtreeTransferRow` and friends have no callers in a KV-only
+      build. Deletion is mechanical (about 800 lines).
+- [ ] **Replace the file magic string** — the header still carries SQLite's
+      `"SQLite format 3"`; switch it to a project-specific string once the
+      KV cell format is frozen, so `sqlite3` CLI tools reject the file.
 
 ## License
 

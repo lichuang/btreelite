@@ -41,7 +41,8 @@ CORE_SOURCES = \
     pcache1.c \
     pager.c \
     wal.c \
-    btree.c
+    btree.c \
+    btreelite_api.c
 
 # The thin public-API layer is added in Phase 4; listed here so that
 # "make" fails fast once it exists but is not yet compiled.
@@ -95,11 +96,11 @@ clean:
 # ----------------------------------------------------------------------
 # Tests
 # ----------------------------------------------------------------------
-TESTBIN = test/t_smoke
-$(TESTBIN): test/t_smoke.c $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/t_smoke.c $(LIB)
+TESTBINS = test/t_smoke test/t_kv
+$(TESTBINS): test/%: test/%.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB)
 
-test: $(TESTBIN)
-	cd test && ../$(TESTBIN)
+test: $(TESTBINS)
+	cd test && ../test/t_smoke && ../test/t_kv
 
 .PHONY: test
