@@ -1,7 +1,7 @@
 /*
-** Phase 2.7b white-box: put/get a value larger than one page.
-** Exercises the overflow-cell path of fillInCell plus IndexMoveto's
-** overflow-cell branch.
+** White-box test: put/get a value larger than one page.  Exercises the
+** overflow-cell path of fillInCell and the overflow branch of the KV value
+** accessors.
 */
 #include "../include/btreelite.h"
 #include <stdio.h>

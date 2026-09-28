@@ -484,10 +484,12 @@ struct CellInfo {
   u32 nPayload;  /* Bytes of payload */
   u16 nLocal;    /* Amount of payload held locally, not on overflow */
   u16 nSize;     /* Size of the cell content on the main b-tree page */
-  /* btreelite KV extension: in a KV tree the payload is [key][value]
-  ** concatenated; nKeyBytes records where the key ends and the value
-  ** begins.  Zero when the page is not a KV leaf. */
-  u32 nKeyBytes; /* Bytes of key at the start of the payload */
+  /* btreelite KV extension: a KV cell carries a byte-string key alongside
+  ** an independent payload (the value).  pKey points at the key bytes and
+  ** nKeyLen is its length; both are zero for non-KV pages.  The key is
+  ** always held locally, so key comparisons never touch overflow pages. */
+  u8 *pKey;      /* KV: start of the key bytes */
+  u32 nKeyLen;   /* KV: number of key bytes */
 };
 
 /*

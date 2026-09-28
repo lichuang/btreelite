@@ -16,7 +16,6 @@ int main(void){
 
   unlink("t_kv.db");
   rc = btreelite_open("t_kv.db", &db);
-  printf("open rc=%d\n", rc);
   if( rc ) return 1;
 
   rc = btreelite_begin(db, 1);
@@ -42,14 +41,12 @@ int main(void){
   CHECK(rc==0);
   rc = btreelite_cursor_open(db, iRoot, 0, &cur);
   CHECK(rc==0);
-  cur = cur;
   for(i=0;i<200;i++){
     char got[128]; int nk, nv, nLen=0;
     uint32_t nVal=0;
     nk = sprintf(key, "key-%06d", (i*37)%1000);
     nv = sprintf(val, "value-%06d-payload", i);
     rc = btreelite_get(cur, key, nk);
-    if( rc ){ printf("get rc=%d key=%s\n", rc, key); return 2; }
     CHECK(rc==0);
     rc = btreelite_key(cur, got, sizeof(got), &nLen);
     CHECK(rc==0);
@@ -69,7 +66,7 @@ int main(void){
   rc = btreelite_first(cur, &res);
   CHECK(rc==0 && res==0);
   {
-    char prev[64]; int nPrev=0, nCount=0;
+    char prev[64]; int nCount=0;
     memset(prev, 0, sizeof(prev));
     while(1){
       int nLen=0;

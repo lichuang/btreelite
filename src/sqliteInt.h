@@ -394,6 +394,11 @@ char *sqlite3_snprintf(int, char*, const char*, ...);
 int sqlite3GetBoolean(const char *z, int dflt);
 
 int sqlite3BtreeIndexMoveto(BtCursor*, UnpackedRecord*, int*);
+int sqlite3BtreeKvMoveto(BtCursor*, const void*, int, int, int*);
+const void *sqlite3BtreeKvKey(BtCursor*, u32*);
+u32 sqlite3BtreeKvValueSize(BtCursor*);
+int sqlite3BtreeKvValueRead(BtCursor*, u32, u32, void*);
+const void *sqlite3BtreeKvValueFetch(BtCursor*, u32*);
 int sqlite3KvEncode(const void*, int, const void*, int, void**);
 
 /* VDBE record-compare entry points (vdbe.c in SQLite; memcmp-based

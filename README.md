@@ -35,16 +35,24 @@ SQL layer) and Phase 2 (KV cell format plus the public API) are done; see
 [docs/phase1-report.md](docs/phase1-report.md),
 [docs/phase2-report.md](docs/phase2-report.md) for the reports.
 
+The KV cell format was subsequently redesigned to use the table-btree
+(leaf-data) page family with a byte-string key instead of the index-btree
+record format, so keys are always held locally and lookups never touch
+overflow pages.  See
+[docs/kv-format-redesign.md](docs/kv-format-redesign.md).  With that in
+place `make test` passes in full (`t_smoke`, `t_kv`, `t_big`), including
+values larger than one page.
+
 ## TODO
 
-- [ ] **Large values spanning overflow pages** — `put`/`get` of a value
-      larger than one page returns `CORRUPT`. The insert itself succeeds;
-      the failure is in the following `IndexMoveto` reposition over the
-      overflow chain (btree.c around the accessPayload/malloc branch,
-      page 2). Suspected cause: the overflow-chain page numbers and
-      `BtShared.nPage` are transiently inconsistent after a balance
-      reorder. Fix requires auditing the `nPage` maintenance ordering
-      across `fillInCell` and `balance_nonroot`.
+- [x] **Large values spanning overflow pages** — fixed. The overflow path
+      itself was correct; the defect was in `putVarint64()` (`src/util.c`),
+      which omitted the `buf[0] &= 0x7f` step that clears the continuation
+      bit of a multi-byte varint's most-significant byte. Any value of
+      `16384` bytes or more therefore encoded its `nValue` header as an
+      extra continuation byte (`81 80 80` instead of `81 80 00`), so the
+      leaf parser read a corrupt key length and the lookup missed. The
+      200 KB `t_big` test passes now.
 - [ ] **Remove the remaining autovacuum scaffolding** — `SQLITE_OMIT_AUTOVACUUM`
       is defined, so this is unused-symbol and warning cleanup only.
 - [ ] **Remove the intkey-only code paths** — `btreeParseCellPtr`,

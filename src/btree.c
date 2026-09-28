@@ -529,6 +529,8 @@ static void downgradeAllSharedCacheTableLocks(Btree *p){
 #endif /* SQLITE_OMIT_SHARED_CACHE */
 
 static void releasePage(MemPage *pPage);         /* Forward reference */
+static SQLITE_NOINLINE void getCellInfo(BtCursor*);
+static int accessPayload(BtCursor*, u32, u32, unsigned char*, int);
 static void releasePageOne(MemPage *pPage);      /* Forward reference */
 static void releasePageNotNull(MemPage *pPage);  /* Forward reference */
 
@@ -717,7 +719,20 @@ static int saveCursorKey(BtCursor *pCur){
   assert( 0==pCur->pKey );
   assert( cursorHoldsMutex(pCur) );
 
-  if( pCur->curIntKey ){
+  if( pCur->pBt->btsFlags & BTS_KV ){
+    /* KV cursor: save the byte-string key so the position can be
+    ** restored after the tree is modified. */
+    void *pKey;
+    getCellInfo(pCur);
+    pCur->nKey = pCur->info.nKeyLen;
+    pKey = sqlite3Malloc( ((i64)pCur->nKey) + 1 );
+    if( pKey ){
+      memcpy(pKey, pCur->info.pKey, (size_t)pCur->nKey);
+      pCur->pKey = pKey;
+    }else{
+      rc = SQLITE_NOMEM_BKPT;
+    }
+  }else if( pCur->curIntKey ){
     /* Only the rowid is required for a table btree */
     pCur->nKey = sqlite3BtreeIntegerKey(pCur);
   }else{
@@ -867,6 +882,11 @@ static int btreeMoveto(
   int rc;                    /* Status code */
   UnpackedRecord *pIdxKey;   /* Unpacked index key */
 
+  if( pCur->pBt->btsFlags & BTS_KV ){
+    /* KV cursor: the key is a byte string. */
+    assert( pKey!=0 || nKey==0 );
+    return sqlite3BtreeKvMoveto(pCur, pKey, (int)nKey, bias, pRes);
+  }
   if( pKey ){
     KeyInfo *pKeyInfo = pCur->pKeyInfo;
     assert( nKey==(i64)(int)nKey );
@@ -1239,6 +1259,72 @@ static int btreePayloadToLocal(MemPage *pPage, i64 nPayload){
 ** all MemPage types and that references the cell by index rather than
 ** by pointer.
 */
+
+/*
+** btreelite KV cell parsers.
+**
+** A KV cell carries a byte-string key plus an independent payload (the
+** value).  Keys are always stored locally, so key comparison never has to
+** touch an overflow page.
+**
+**   leaf:      [varint nValue][varint nKeyLen][key][value][ovfl?]
+**   interior:  [4-byte child][varint nKeyLen][key]
+**
+** nPayload, nLocal and nSize describe the value only; the key bytes are
+** reported through pKey/nKeyLen.
+*/
+static void kvParseCellLeaf(
+  MemPage *pPage,
+  u8 *pCell,
+  CellInfo *pInfo
+){
+  u8 *pIter = pCell;
+  u32 nValue;
+  u32 nKeyLen;
+
+  assert( sqlite3_mutex_held(pPage->pBt->mutex) );
+  assert( pPage->childPtrSize==0 );
+
+  pIter += getVarint32(pIter, nValue);
+  pIter += getVarint32(pIter, nKeyLen);
+  pInfo->pKey = pIter;
+  pInfo->nKeyLen = nKeyLen;
+  pInfo->nKey = (i64)nKeyLen;
+  pIter += nKeyLen;
+  pInfo->pPayload = pIter;
+  pInfo->nPayload = nValue;
+  testcase( nValue==pPage->maxLocal );
+  testcase( nValue==(u32)pPage->maxLocal+1 );
+  if( nValue<=pPage->maxLocal ){
+    pInfo->nSize = (u16)(nValue + (u32)(pIter - pCell));
+    if( pInfo->nSize<4 ) pInfo->nSize = 4;
+    pInfo->nLocal = (u16)nValue;
+  }else{
+    btreeParseCellAdjustSizeForOverflow(pPage, pCell, pInfo);
+  }
+}
+
+static void kvParseCellInterior(
+  MemPage *pPage,
+  u8 *pCell,
+  CellInfo *pInfo
+){
+  u8 *pIter = &pCell[4];
+  u32 nKeyLen;
+
+  assert( sqlite3_mutex_held(pPage->pBt->mutex) );
+  assert( pPage->childPtrSize==4 );
+
+  pIter += getVarint32(pIter, nKeyLen);
+  pInfo->pKey = pIter;
+  pInfo->nKeyLen = nKeyLen;
+  pInfo->nKey = (i64)nKeyLen;
+  pInfo->nSize = (u16)(4 + (u32)(pIter - &pCell[4]) + nKeyLen);
+  pInfo->nPayload = 0;
+  pInfo->nLocal = 0;
+  pInfo->pPayload = 0;
+}
+
 static void btreeParseCellPtrNoPayload(
   MemPage *pPage,         /* Page containing the cell */
   u8 *pCell,              /* Pointer to the cell text. */
@@ -1368,32 +1454,8 @@ static void btreeParseCellPtrIndex(
   pInfo->nKey = nPayload;
   pInfo->nPayload = nPayload;
   pInfo->pPayload = pIter;
-  /* btreelite KV trees: the cell payload is the KV record
-  ** [varint nKeyBytes][key][value], on leaves and interior dividers
-  ** alike, so index-btree cell handling is untouched.  Record where the
-  ** key ends so the value accessors can split the record. */
-  if( pPage->pBt && (pPage->pBt->btsFlags & BTS_KV)!=0 ){
-    u64 nKeyBytes = 0;
-    u8 *pKV = pIter;
-    if( nPayload>0 ){
-      nKeyBytes = *pKV;
-      if( nKeyBytes>=0x80 ){
-        u8 *pKEnd = &pKV[8];
-        nKeyBytes &= 0x7f;
-        do{
-          nKeyBytes = (nKeyBytes<<7) | (*++pKV & 0x7f);
-        }while( *(pKV)>=0x80 && pKV<pKEnd );
-      }
-      pKV++;
-      pInfo->nKeyBytes = (u32)nKeyBytes;
-      /* pPayload stays on the record start ([varint nKeyBytes][key][value]);
-      ** value accessors skip nKeyBytes to reach the value. */
-    }else{
-      pInfo->nKeyBytes = 0;
-    }
-  }else{
-    pInfo->nKeyBytes = 0;
-  }
+  pInfo->pKey = 0;
+  pInfo->nKeyLen = 0;
   testcase( nPayload==pPage->maxLocal );
   testcase( nPayload==(u32)pPage->maxLocal+1 );
   assert( nPayload>=0 );
@@ -1587,6 +1649,47 @@ static u16 cellSizePtrTableLeaf(MemPage *pPage, u8 *pCell){
   }
   assert( nSize==debuginfo.nSize || CORRUPT_DB );
   return (u16)nSize;
+}
+
+
+/*
+** Compute the local size of a KV cell.  Only the value may overflow; the
+** key bytes and both varints are always local.
+*/
+static u16 kvCellSizeLeaf(MemPage *pPage, u8 *pCell){
+  u8 *pIter = pCell;
+  u32 nSize=0;
+  u32 nKeyLen=0;
+
+  assert( pPage->childPtrSize==0 );
+  pIter += getVarint32(pIter, nSize);
+  pIter += getVarint32(pIter, nKeyLen);
+  pIter += nKeyLen;
+  testcase( nSize==pPage->maxLocal );
+  testcase( nSize==(u32)pPage->maxLocal+1 );
+  if( nSize<=pPage->maxLocal ){
+    nSize += (u32)(pIter - pCell);
+    if( nSize<4 ) nSize = 4;
+  }else{
+    int minLocal = pPage->minLocal;
+    nSize = minLocal + (nSize - minLocal) % (pPage->pBt->usableSize - 4);
+    testcase( nSize==pPage->maxLocal );
+    testcase( nSize==(u32)pPage->maxLocal+1 );
+    if( nSize>pPage->maxLocal ){
+      nSize = minLocal;
+    }
+    nSize += 4 + (u16)(pIter - pCell);
+  }
+  return (u16)nSize;
+}
+
+static u16 kvCellSizeInterior(MemPage *pPage, u8 *pCell){
+  u8 *pIter = &pCell[4];
+  u32 nKeyLen=0;
+
+  assert( pPage->childPtrSize==4 );
+  pIter += getVarint32(pIter, nKeyLen);
+  return (u16)(4 + (u16)(pIter - &pCell[4]) + (u16)nKeyLen);
 }
 
 
@@ -2062,12 +2165,23 @@ static int decodeFlags(MemPage *pPage, int flagByte){
     pPage->childPtrSize = 0;
     pPage->leaf = 1;
     if( flagByte==(PTF_LEAFDATA | PTF_INTKEY | PTF_LEAF) ){
-      pPage->intKeyLeaf = 1;
-      pPage->xCellSize = cellSizePtrTableLeaf;
-      pPage->xParseCell = btreeParseCellPtr;
-      pPage->intKey = 1;
-      pPage->maxLocal = pBt->maxLeaf;
-      pPage->minLocal = pBt->minLeaf;
+      if( pBt->btsFlags & BTS_KV ){
+        /* KV leaf: byte-string key + independent value payload.  The
+        ** intKeyLeaf flag makes balance() build key-only dividers. */
+        pPage->intKey = 1;
+        pPage->intKeyLeaf = 1;
+        pPage->xCellSize = kvCellSizeLeaf;
+        pPage->xParseCell = kvParseCellLeaf;
+        pPage->maxLocal = pBt->maxLeaf;
+        pPage->minLocal = pBt->minLeaf;
+      }else{
+        pPage->intKeyLeaf = 1;
+        pPage->xCellSize = cellSizePtrTableLeaf;
+        pPage->xParseCell = btreeParseCellPtr;
+        pPage->intKey = 1;
+        pPage->maxLocal = pBt->maxLeaf;
+        pPage->minLocal = pBt->minLeaf;
+      }
     }else if( flagByte==(PTF_ZERODATA | PTF_LEAF) ){
       pPage->intKey = 0;
       pPage->intKeyLeaf = 0;
@@ -2075,6 +2189,7 @@ static int decodeFlags(MemPage *pPage, int flagByte){
       pPage->xParseCell = btreeParseCellPtrIndex;
       pPage->maxLocal = pBt->maxLocal;
       pPage->minLocal = pBt->minLocal;
+      if( pBt->btsFlags & BTS_KV ) return SQLITE_CORRUPT_PAGE(pPage);
     }else{
       pPage->intKey = 0;
       pPage->intKeyLeaf = 0;
@@ -2092,13 +2207,23 @@ static int decodeFlags(MemPage *pPage, int flagByte){
       pPage->xParseCell = btreeParseCellPtrIndex;
       pPage->maxLocal = pBt->maxLocal;
       pPage->minLocal = pBt->minLocal;
+      if( pBt->btsFlags & BTS_KV ) return SQLITE_CORRUPT_PAGE(pPage);
     }else if( flagByte==(PTF_LEAFDATA | PTF_INTKEY) ){
-      pPage->intKeyLeaf = 0;
-      pPage->xCellSize = cellSizePtrNoPayload;
-      pPage->xParseCell = btreeParseCellPtrNoPayload;
-      pPage->intKey = 1;
-      pPage->maxLocal = pBt->maxLeaf;
-      pPage->minLocal = pBt->minLeaf;
+      if( pBt->btsFlags & BTS_KV ){
+        pPage->intKeyLeaf = 0;
+        pPage->intKey = 1;
+        pPage->xCellSize = kvCellSizeInterior;
+        pPage->xParseCell = kvParseCellInterior;
+        pPage->maxLocal = pBt->maxLeaf;
+        pPage->minLocal = pBt->minLeaf;
+      }else{
+        pPage->intKeyLeaf = 0;
+        pPage->xCellSize = cellSizePtrNoPayload;
+        pPage->xParseCell = btreeParseCellPtrNoPayload;
+        pPage->intKey = 1;
+        pPage->maxLocal = pBt->maxLeaf;
+        pPage->minLocal = pBt->minLeaf;
+      }
     }else{
       pPage->intKey = 0;
       pPage->intKeyLeaf = 0;
@@ -3565,7 +3690,7 @@ static int newDatabase(BtShared *pBt){
   memset(&data[24], 0, 100-24);
   /* btreelite is KV-only: the schema root is a leaf page of the index
   ** (BLOBKEY) style, since every tree in the file holds KV records. */
-  zeroPage(pP1, PTF_ZERODATA|PTF_LEAF);
+  zeroPage(pP1, PTF_INTKEY|PTF_LEAFDATA|PTF_LEAF);
   pBt->btsFlags |= BTS_PAGESIZE_FIXED;
 #ifndef SQLITE_OMIT_AUTOVACUUM
   assert( pBt->autoVacuum==1 || pBt->autoVacuum==0 );
@@ -4999,6 +5124,48 @@ u32 sqlite3BtreePayloadSize(BtCursor *pCur){
 }
 
 /*
+** btreelite KV accessors.  sqlite3BtreeKvKey() returns a pointer to the
+** key bytes of the entry the cursor points at (held locally on the page)
+** and writes the key length to *pnKey.  The pointer is valid until the
+** next btree call on this cursor.
+*/
+const void *sqlite3BtreeKvKey(BtCursor *pCur, u32 *pnKey){
+  assert( cursorHoldsMutex(pCur) );
+  assert( pCur->eState==CURSOR_VALID );
+  getCellInfo(pCur);
+  *pnKey = pCur->info.nKeyLen;
+  return (const void*)pCur->info.pKey;
+}
+
+/*
+** btreelite KV value accessors.  Mirrors sqlite3BtreePayload/PayloadFetch.
+** The offset is relative to the start of the value, which begins the cell
+** payload region (the key bytes precede it inside the cell header).
+*/
+u32 sqlite3BtreeKvValueSize(BtCursor *pCur){
+  assert( cursorHoldsMutex(pCur) );
+  assert( pCur->eState==CURSOR_VALID );
+  getCellInfo(pCur);
+  return pCur->info.nPayload;
+}
+
+int sqlite3BtreeKvValueRead(BtCursor *pCur, u32 offset, u32 amt, void *pBuf){
+  assert( cursorHoldsMutex(pCur) );
+  assert( pCur->eState==CURSOR_VALID );
+  getCellInfo(pCur);
+  if( (u64)offset+amt > pCur->info.nPayload ) return SQLITE_ERROR;
+  return accessPayload(pCur, offset, amt, (unsigned char*)pBuf, 0);
+}
+
+const void *sqlite3BtreeKvValueFetch(BtCursor *pCur, u32 *pAmt){
+  assert( cursorHoldsMutex(pCur) );
+  assert( pCur->eState==CURSOR_VALID );
+  getCellInfo(pCur);
+  *pAmt = pCur->info.nLocal;
+  return (const void*)pCur->info.pPayload;
+}
+
+/*
 ** Return an upper bound on the size of any record for the table
 ** that the cursor is pointing into.
 **
@@ -5974,6 +6141,120 @@ moveto_table_next_layer:
 moveto_table_finish:
   pCur->info.nSize = 0;
   assert( (pCur->curFlags & BTCF_ValidOvfl)==0 );
+  return rc;
+}
+
+/*
+** Compare the key of the cell at index idx on page pPage against the
+** byte string (pKey,nKey), using binary comparison with a length
+** tiebreak.  Both the cell key and the search key are held locally, so
+** this never touches an overflow page.  Returns <0, 0 or >0.
+*/
+static int kvKeyCompareCell(MemPage *pPage, int idx, const u8 *pKey, int nKey){
+  CellInfo info;
+  int nCmp, c;
+  pPage->xParseCell(pPage, findCell(pPage, idx), &info);
+  nCmp = (info.nKeyLen < (u32)nKey) ? (int)info.nKeyLen : nKey;
+  c = memcmp(info.pKey, pKey, (size_t)nCmp);
+  if( c==0 ) c = (int)info.nKeyLen - nKey;
+  if( c<0 ) return -1;
+  if( c>0 ) return +1;
+  return 0;
+}
+
+/*
+** btreelite KV analogue of sqlite3BtreeTableMoveto.  The key is an
+** arbitrary byte string rather than an integer, so the binary search
+** compares keys with kvKeyCompareCell.  The cursor is left pointing at
+** the entry nearest (pKey,nKey); *pRes follows the same convention as
+** the table variant.
+*/
+int sqlite3BtreeKvMoveto(
+  BtCursor *pCur,          /* The cursor to be moved */
+  const void *pKey,        /* Key bytes */
+  int nKey,                /* Number of key bytes */
+  int biasRight,           /* If true, bias the search to the high end */
+  int *pRes                /* Write search results here */
+){
+  int rc;
+  const u8 *pK = (const u8*)pKey;
+
+  assert( cursorOwnsBtShared(pCur) );
+  assert( sqlite3_mutex_held(pCur->pBtree->db->mutex) );
+  assert( pRes );
+  assert( pCur->pKeyInfo==0 );
+
+  if( pCur->eState==CURSOR_VALID && (pCur->curFlags & BTCF_ValidNKey)!=0
+   && pCur->skipNext==0 ){
+    CellInfo info;
+    pCur->pPage->xParseCell(pCur->pPage, findCell(pCur->pPage, pCur->ix), &info);
+    if( info.nKeyLen==(u32)nKey && memcmp(info.pKey, pK, (size_t)nKey)==0 ){
+      *pRes = 0;
+      return SQLITE_OK;
+    }
+  }
+
+  rc = moveToRoot(pCur);
+  if( rc ){
+    if( rc==SQLITE_EMPTY ){
+      assert( pCur->pgnoRoot==0 || pCur->pPage->nCell==0 );
+      *pRes = -1;
+      return SQLITE_OK;
+    }
+    return rc;
+  }
+
+  for(;;){
+    int lwr, upr, idx, c;
+    Pgno chldPg;
+    MemPage *pPage = pCur->pPage;
+
+    assert( pPage->nCell>0 );
+    assert( pPage->intKey );
+    lwr = 0;
+    upr = pPage->nCell-1;
+    assert( biasRight==0 || biasRight==1 );
+    idx = upr>>(1-biasRight);
+    for(;;){
+      c = kvKeyCompareCell(pPage, idx, pK, nKey);
+      if( c<0 ){
+        lwr = idx+1;
+      }else if( c>0 ){
+        upr = idx-1;
+      }else{
+        pCur->ix = (u16)idx;
+        if( !pPage->leaf ){
+          lwr = idx;
+          goto kv_moveto_next_layer;
+        }else{
+          pCur->curFlags |= BTCF_ValidNKey;
+          pCur->info.nSize = 0;
+          *pRes = 0;
+          return SQLITE_OK;
+        }
+      }
+      if( lwr>upr ) break;
+      idx = (lwr+upr)>>1;
+    }
+    assert( lwr==upr+1 || !pPage->leaf );
+    if( pPage->leaf ){
+      pCur->ix = (u16)idx;
+      *pRes = c;
+      rc = SQLITE_OK;
+      goto kv_moveto_finish;
+    }
+kv_moveto_next_layer:
+    if( lwr>=pPage->nCell ){
+      chldPg = get4byte(&pPage->aData[pPage->hdrOffset+8]);
+    }else{
+      chldPg = get4byte(findCell(pPage, lwr));
+    }
+    pCur->ix = (u16)lwr;
+    rc = moveToChild(pCur, chldPg);
+    if( rc ) break;
+  }
+kv_moveto_finish:
+  pCur->info.nSize = 0;
   return rc;
 }
 
@@ -7135,7 +7416,16 @@ static int fillInCell(
     nSrc = pX->nData;
     assert( pPage->intKeyLeaf ); /* fillInCell() only called for leaves */
     nHeader += putVarint32(&pCell[nHeader], nPayload);
-    nHeader += putVarint(&pCell[nHeader], *(u64*)&pX->nKey);
+    if( pPage->pBt->btsFlags & BTS_KV ){
+      /* KV leaf: the key is an arbitrary byte string held locally, and
+      ** only the value participates in overflow. */
+      assert( pX->pKey!=0 || pX->nKey==0 );
+      nHeader += putVarint32(&pCell[nHeader], (u32)pX->nKey);
+      memcpy(&pCell[nHeader], pX->pKey, (size_t)pX->nKey);
+      nHeader += (int)pX->nKey;
+    }else{
+      nHeader += putVarint(&pCell[nHeader], *(u64*)&pX->nKey);
+    }
   }else{
     assert( pX->nKey<=0x7fffffff && pX->pKey!=0 );
     nSrc = nPayload = (int)pX->nKey;
@@ -8877,14 +9167,21 @@ static int balance_nonroot(
     }else if( leafData ){
       /* If the tree is a leaf-data tree, and the siblings are leaves,
       ** then there is no divider cell in b.apCell[]. Instead, the divider
-      ** cell consists of the integer key for the right-most cell of
-      ** the sibling-page assembled above only.
+      ** cell consists of the key for the right-most cell of the
+      ** sibling-page assembled above only.
       */
       CellInfo info;
       j--;
       pNew->xParseCell(pNew, b.apCell[j], &info);
       pCell = pTemp;
-      sz = 4 + putVarint(&pCell[4], info.nKey);
+      if( pBt->btsFlags & BTS_KV ){
+        /* KV divider: [4-byte child][varint nKeyLen][key bytes]. */
+        sz = 4 + putVarint32(&pCell[4], info.nKeyLen);
+        memcpy(&pCell[sz], info.pKey, info.nKeyLen);
+        sz += (int)info.nKeyLen;
+      }else{
+        sz = 4 + putVarint(&pCell[4], info.nKey);
+      }
       pTemp = 0;
     }else{
       pCell -= 4;
@@ -9504,6 +9801,28 @@ int sqlite3BtreeInsert(
   assert( (flags & BTREE_PREFORMAT) || (pX->pKey==0)==(pCur->pKeyInfo==0) );
 
   if( pCur->pKeyInfo==0 ){
+    if( p->pBt->btsFlags & BTS_KV ){
+      /* btreelite KV insert: the key is the byte string pX->pKey/nKey and
+      ** the value is pX->pData/nData.  Locate with the byte-string key. */
+      if( loc==0 ){
+        rc = sqlite3BtreeKvMoveto(pCur, pX->pKey, (int)pX->nKey,
+                                 (flags & BTREE_APPEND)!=0, &loc);
+        if( rc ) return rc;
+      }
+      if( loc==0 ){
+        getCellInfo(pCur);
+        if( pCur->info.nKeyLen==(u32)pX->nKey
+         && memcmp(pCur->info.pKey, pX->pKey, (size_t)pX->nKey)==0
+        ){
+          if( pCur->info.nSize!=0
+           && pCur->info.nPayload==(u32)pX->nData+pX->nZero
+          ){
+            /* Same key and same value size: overwrite in place. */
+            return btreeOverwriteCell(pCur, pX);
+          }
+        }
+      }
+    }else{
     assert( pX->pKey==0 );
     /* If this is an insert into a table b-tree, invalidate any incrblob
     ** cursors open on the row being replaced */
@@ -9545,6 +9864,7 @@ int sqlite3BtreeInsert(
       rc = sqlite3BtreeTableMoveto(pCur, pX->nKey,
                (flags & BTREE_APPEND)!=0, &loc);
       if( rc ) return rc;
+    }
     }
   }else{
     /* This is an index or a WITHOUT ROWID table */
@@ -10217,7 +10537,11 @@ static int btreeCreateTable(Btree *p, Pgno *piTable, int createTabFlags){
   }
 #endif
   assert( sqlite3PagerIswriteable(pRoot->pDbPage) );
-  if( createTabFlags & BTREE_INTKEY ){
+  if( pBt->btsFlags & BTS_KV ){
+    /* btreelite KV trees use the leaf-data page type; the key is a byte
+    ** string (see kvParseCellLeaf / kvParseCellInterior). */
+    ptfFlags = PTF_INTKEY | PTF_LEAFDATA | PTF_LEAF;
+  }else if( createTabFlags & BTREE_INTKEY ){
     ptfFlags = PTF_INTKEY | PTF_LEAFDATA | PTF_LEAF;
   }else{
     ptfFlags = PTF_ZERODATA | PTF_LEAF;

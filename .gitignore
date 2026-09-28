@@ -89,8 +89,8 @@ dist/
 # database/journal files created at run time
 test/t_*
 !test/t_*.c
-test/*.db
-test/*.db-journal
-test/*.db-wal
-test/*.db-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 test/*.dSYM

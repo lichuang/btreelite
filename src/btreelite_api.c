@@ -14,10 +14,17 @@
 **
 ** A btreelite_db owns one Btree handle backed by one file and one
 ** connection object.  A btreelite_cur wraps a btree cursor opened on one
-** tree.  A KV record is stored as an index-btree cell whose payload is
-** the record [varint nKeyBytes][key][value]; records are encoded on
-** insert and split on read.  Key order is plain memcmp with a length
-** tiebreak (kvCompare in btreelite_compat.c).
+** tree.
+**
+** KV cells use the leaf-data page type and hold a byte-string key beside
+** an independent value:
+**
+**   leaf:      [varint nValue][varint nKeyLen][key][value][ovfl?]
+**   interior:  [4-byte child][varint nKeyLen][key]
+**
+** Keys are always local, so lookups never read overflow pages.  Only the
+** value may spill onto overflow pages.  Key order is binary comparison
+** with a length tiebreak.
 */
 #include "btreeliteInt.h"
 #include "btree.h"
@@ -30,105 +37,18 @@ struct btreelite_db {
 
 struct btreelite_cur {
   BtCursor *pCur;
-  KeyInfo *pKeyInfo;
   Pgno iRoot;
-  int nKeyOff;
-  int nKeyLen;
-  int nValLen;
-  int bValid;
 };
-
-int sqlite3KvEncode(const void *pKey, int nKey, const void *pVal, int nVal,
-                    void **ppRec){
-  u8 aTmp[9];
-  int nHdr, nRec;
-  u8 *pRec;
-  if( nKey<0 || nVal<0 ) return BTREELITE_ERROR;
-  nHdr = sqlite3PutVarint32(aTmp, (u32)nKey);
-  nRec = nHdr + nKey + nVal;
-  pRec = (u8*)sqlite3Malloc((u64)nRec);
-  if( pRec==0 ) return BTREELITE_NOMEM;
-  (void)sqlite3PutVarint32(pRec, (u32)nKey);
-  if( nKey>0 ) memcpy(&pRec[nHdr], pKey, (size_t)nKey);
-  if( nVal>0 ) memcpy(&pRec[nHdr+nKey], pVal, (size_t)nVal);
-  *ppRec = pRec;
-  return BTREELITE_OK;
-}
 
 void btreelite_free(void *p){ sqlite3_free(p); }
 
 /*
-** Decode the KV record header of the cursor's current cell and cache the
-** key/value split.  The payload layout is [varint nKeyBytes][key][value].
-*/
-/*
-** Build an UnpackedRecord whose search key is the raw byte string (k,nK)
-** and run one IndexMoveto.  On return *pRes<0 means the parked cell
-** sorts before the key, *pRes>0 after, 0 exact.
+** Run one KV moveto.  The key is the raw byte string (k,nK); keys are held
+** locally so this never touches an overflow page.  *pRes follows the
+** sqlite3BtreeTableMoveto convention.
 */
 static int kvMoveto(btreelite_cur *c, const void *k, int nK, int *pRes){
-  UnpackedRecord r;
-  memset(&r, 0, sizeof(r));
-  r.pKeyInfo = c->pKeyInfo;
-  r.u.z = (char*)k;
-  r.n = nK;
-  r.nField = 1;
-  r.default_rc = 0;
-  return sqlite3BtreeIndexMoveto(c->pCur, &r, pRes);
-}
-
-/*
-** Decode the KV record of the cell the cursor rests on and cache the
-** key/value split.  The payload layout is [varint nKeyBytes][key][value].
-*/
-static int kvCacheRefresh(btreelite_cur *c){
-  u32 nPayload = sqlite3BtreePayloadSize(c->pCur);
-  u8 aHead[16];
-  int nAvail;
-  u64 nKey;
-  u8 *p, *pEnd;
-  if( nPayload==0 ){ c->bValid = 0; return BTREELITE_OK; }
-  nAvail = nPayload<(u32)sizeof(aHead) ? (int)nPayload : (int)sizeof(aHead);
-  {
-    int rc = sqlite3BtreePayload(c->pCur, 0, (u32)nAvail, aHead);
-    if( rc!=SQLITE_OK ) return rc;
-  }
-  p = aHead;
-  pEnd = &aHead[nAvail];
-  nKey = *p;
-  while( (*p)>=0x80 && p<pEnd ){
-    nKey = (nKey<<7) | (u64)(*++p & 0x7f);
-  }
-  p++;
-  c->nKeyOff = (int)(p - aHead);
-  c->nKeyLen = (int)nKey;
-  c->nValLen = (int)nPayload - c->nKeyOff - c->nKeyLen;
-  if( c->nKeyLen<0 || c->nKeyOff+c->nKeyLen>(int)nPayload ){
-    return BTREELITE_CORRUPT;
-  }
-  c->bValid = 1;
-  return BTREELITE_OK;
-}
-
-static void kvCacheInvalidate(btreelite_cur *c){ c->bValid = 0; }
-
-/*
-** Move the cursor to the entry with key (k,nK) and refresh the split
-** cache when the key is present.  *pRes follows the IndexMoveto
-** contract; the caller decides what "not found" means for its op.
-*/
-static int kvLocate(btreelite_cur *c, const void *k, int nK, int *pRes){
-  int rc;
-  if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
-  rc = kvMoveto(c, k, nK, pRes);
-  if( rc!=SQLITE_OK ) return rc;
-  if( *pRes==0 ){
-    rc = kvCacheRefresh(c);
-    if( rc!=SQLITE_OK ) return rc;
-  }else{
-    kvCacheInvalidate(c);
-  }
-  return BTREELITE_OK;
+  return sqlite3BtreeKvMoveto(c->pCur, k, nK, 0, pRes);
 }
 
 /* ---------------------------------------------------------------- */
@@ -137,7 +57,6 @@ static int kvLocate(btreelite_cur *c, const void *k, int nK, int *pRes){
 
 int btreelite_open(const char *zPath, btreelite_db **ppDb){
   int rc;
-  btreelite_db *p;
   int vfsFlags = SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE|SQLITE_OPEN_MAIN_DB;
   *ppDb = 0;
   rc = sqlite3_initialize();
@@ -227,27 +146,16 @@ int btreelite_cursor_open(btreelite_db *p, unsigned iRoot, int wrFlag,
   *ppCur = 0;
   c = (btreelite_cur*)sqlite3MallocZero(sizeof(btreelite_cur));
   if( c==0 ) return BTREELITE_NOMEM;
-  /* btreeMoveto rejects keys whose field count exceeds nAllField; a KV
-  ** search key is one field. */
-  c->pKeyInfo = (KeyInfo*)sqlite3MallocZero(sizeof(KeyInfo));
-  if( c->pKeyInfo ){
-    c->pKeyInfo->nKeyField = 1;
-    c->pKeyInfo->nAllField = 1;
-  }
-  if( c->pKeyInfo==0 ){ sqlite3_free(c); return BTREELITE_NOMEM; }
   c->iRoot = iRoot;
   c->pCur = (BtCursor*)sqlite3Malloc(sqlite3BtreeCursorSize());
-  if( c->pCur==0 ){
-    sqlite3_free(c->pKeyInfo);
-    sqlite3_free(c);
-    return BTREELITE_NOMEM;
-  }
+  if( c->pCur==0 ){ sqlite3_free(c); return BTREELITE_NOMEM; }
   sqlite3BtreeCursorZero(c->pCur);
+  /* KV trees use table-btree semantics with a byte-string key, so the
+  ** cursor carries no KeyInfo (pKeyInfo==0). */
   rc = sqlite3BtreeCursor(p->pBt, (Pgno)iRoot,
-                          wrFlag ? BTREE_WRCSR : 0, c->pKeyInfo, c->pCur);
+                          wrFlag ? BTREE_WRCSR : 0, 0, c->pCur);
   if( rc!=SQLITE_OK ){
     sqlite3_free(c->pCur);
-    sqlite3_free(c->pKeyInfo);
     sqlite3_free(c);
     return rc;
   }
@@ -258,7 +166,6 @@ int btreelite_cursor_open(btreelite_db *p, unsigned iRoot, int wrFlag,
 void btreelite_cursor_close(btreelite_cur *c){
   if( c==0 ) return;
   if( c->pCur ){ sqlite3BtreeCloseCursor(c->pCur); sqlite3_free(c->pCur); }
-  sqlite3_free(c->pKeyInfo);
   sqlite3_free(c);
 }
 
@@ -268,41 +175,30 @@ void btreelite_cursor_close(btreelite_cur *c){
 
 int btreelite_put(btreelite_cur *c, const void *k, int nK,
                   const void *v, int nV){
-  void *pRec = 0;
   BtreePayload x;
-  int rc, res = 0, loc;
+  int rc, loc = 0;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
-  /* IndexMoveto parks the cursor at the insert position; its res is
-  ** exactly the seekResult sqlite3BtreeInsert expects. */
+  /* Locate the insertion point; the returned value is the seekResult
+  ** sqlite3BtreeInsert expects. */
   rc = kvMoveto(c, k, nK, &loc);
   if( rc!=SQLITE_OK ) return rc;
-  rc = sqlite3KvEncode(k, nK, v, nV, &pRec);
-  if( rc!=BTREELITE_OK ) return rc;
   memset(&x, 0, sizeof(x));
-  x.pKey = pRec;
-  {
-    u8 aTmp[9];
-    x.nKey = (i64)(sqlite3PutVarint32(aTmp, (u32)nK) + nK + nV);
-  }
+  x.pKey = k;
+  x.nKey = nK;
+  x.pData = v;
+  x.nData = nV;
   rc = sqlite3BtreeInsert(c->pCur, &x, 0, loc);
-  sqlite3_free(pRec);
   if( rc!=SQLITE_OK ) return rc;
-  /* Reposition on the stored record and refresh the split cache. */
+  /* Reposition on the stored entry. */
   rc = kvMoveto(c, k, nK, &loc);
-  if( rc!=SQLITE_OK ) return rc;
-  if( loc==0 ){
-    rc = kvCacheRefresh(c);
-    if( rc!=SQLITE_OK ) return rc;
-  }else{
-    kvCacheInvalidate(c);
-  }
   return rc;
 }
 
 int btreelite_get(btreelite_cur *c, const void *k, int nK){
   int rc, res = 0;
-  rc = kvLocate(c, k, nK, &res);
-  if( rc!=BTREELITE_OK ) return rc;
+  if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
+  rc = kvMoveto(c, k, nK, &res);
+  if( rc!=SQLITE_OK ) return rc;
   return res==0 ? BTREELITE_OK : BTREELITE_NOTFOUND;
 }
 
@@ -312,7 +208,6 @@ int btreelite_checkpoint(btreelite_db *p, int eMode, int *pnLog, int *pnCkpt){
 }
 
 int btreelite_journal_mode(btreelite_db *p, int eMode){
-  Pager *pPager;
   if( p==0 ) return BTREELITE_ERROR;
   return sqlite3PagerSetJournalMode(sqlite3BtreePager(p->pBt), eMode);
 }
@@ -327,43 +222,25 @@ void btreelite_busy_timeout(btreelite_db *p, int ms){
 
 int btreelite_del(btreelite_cur *c, const void *k, int nK){
   int rc, res = 0;
-  rc = kvLocate(c, k, nK, &res);
-  if( rc!=BTREELITE_OK ) return rc;
-  if( res!=0 ) return BTREELITE_NOTFOUND;
-  rc = sqlite3BtreeDelete(c->pCur, 0);
+  if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
+  rc = kvMoveto(c, k, nK, &res);
   if( rc!=SQLITE_OK ) return rc;
-  kvCacheInvalidate(c);
-  return BTREELITE_OK;
+  if( res!=0 ) return BTREELITE_NOTFOUND;
+  return sqlite3BtreeDelete(c->pCur, 0);
 }
 
-/*
-** Move to the first entry whose key is greater than or equal to (k,nK).
-** IndexMoveto parks the cursor where the key would be inserted; when
-** *pRes!=0 that position is the successor of the key, which is exactly
-** the btreelite_seek contract.
-*/
 int btreelite_seek(btreelite_cur *c, const void *k, int nK){
   int rc, res = 0;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
   rc = kvMoveto(c, k, nK, &res);
-  if( rc==SQLITE_EMPTY ){
-    kvCacheInvalidate(c);
-    return BTREELITE_OK;   /* empty tree: cursor is at EOF */
-  }
   if( rc!=SQLITE_OK ) return rc;
   if( res<0 ){
-    /* Parked on a cell that sorts before the key (the insert position).
-    ** The first entry >= key is the next one, or nothing. */
+    /* Parked before the key: step to the first entry >= key. */
     rc = sqlite3BtreeNext(c->pCur, 0);
-    if( rc==SQLITE_DONE ){
-      kvCacheInvalidate(c);
-      return BTREELITE_OK;
-    }
+    if( rc==SQLITE_DONE ) return BTREELITE_OK;
     if( rc!=SQLITE_OK ) return rc;
   }
-  /* Parked on the first entry >= key. */
-  rc = kvCacheRefresh(c);
-  return rc;
+  return BTREELITE_OK;
 }
 
 int btreelite_eof(btreelite_cur *c){
@@ -372,39 +249,27 @@ int btreelite_eof(btreelite_cur *c){
 }
 
 int btreelite_first(btreelite_cur *c, int *pRes){
-  int rc;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
-  rc = sqlite3BtreeFirst(c->pCur, pRes);
-  if( rc==SQLITE_OK && *pRes==0 ) rc = kvCacheRefresh(c);
-  return rc;
+  return sqlite3BtreeFirst(c->pCur, pRes);
 }
 
 int btreelite_last(btreelite_cur *c, int *pRes){
-  int rc;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
-  rc = sqlite3BtreeLast(c->pCur, pRes);
-  if( rc==SQLITE_OK && *pRes==0 ) rc = kvCacheRefresh(c);
-  return rc;
+  return sqlite3BtreeLast(c->pCur, pRes);
 }
 
 int btreelite_next(btreelite_cur *c){
   int rc;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
   rc = sqlite3BtreeNext(c->pCur, 0);
-  if( rc==SQLITE_DONE ) return BTREELITE_DONE;
-  if( rc!=SQLITE_OK ) return rc;
-  rc = kvCacheRefresh(c);
-  return rc;
+  return rc==SQLITE_DONE ? BTREELITE_DONE : rc;
 }
 
 int btreelite_prev(btreelite_cur *c){
   int rc;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
   rc = sqlite3BtreePrevious(c->pCur, 0);
-  if( rc==SQLITE_DONE ) return BTREELITE_DONE;
-  if( rc!=SQLITE_OK ) return rc;
-  rc = kvCacheRefresh(c);
-  return rc;
+  return rc==SQLITE_DONE ? BTREELITE_DONE : rc;
 }
 
 /* ---------------------------------------------------------------- */
@@ -412,28 +277,40 @@ int btreelite_prev(btreelite_cur *c){
 /* ---------------------------------------------------------------- */
 
 int btreelite_key(btreelite_cur *c, void *buf, int nMax, int *pnLen){
-  int rc;
-  if( c==0 || c->pCur==0 || !c->bValid ) return BTREELITE_ERROR;
-  if( pnLen ) *pnLen = c->nKeyLen;
+  u32 nKey = 0;
+  const void *pKey;
+  if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
+  if( sqlite3BtreeEof(c->pCur) ) return BTREELITE_ERROR;
+  /* The key is held locally, so a single fetch suffices. */
+  pKey = sqlite3BtreeKvKey(c->pCur, &nKey);
+  if( pnLen ) *pnLen = (int)nKey;
   {
-    u32 nCopy = (u32)(c->nKeyLen<0 ? 0 : c->nKeyLen);
+    u32 nCopy = nKey;
     if( nCopy>(u32)nMax ) nCopy = (u32)nMax;
-    rc = sqlite3BtreePayload(c->pCur, (u32)c->nKeyOff, nCopy, buf);
-    if( rc!=SQLITE_OK ) return rc;
+    if( nCopy ) memcpy(buf, pKey, (size_t)nCopy);
   }
   return BTREELITE_OK;
 }
 
 int btreelite_value_size(btreelite_cur *c, uint32_t *pnVal){
-  if( c==0 || c->pCur==0 || !c->bValid ) return BTREELITE_ERROR;
-  *pnVal = (uint32_t)(c->nValLen<0 ? 0 : c->nValLen);
+  if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
+  if( sqlite3BtreeEof(c->pCur) ) return BTREELITE_ERROR;
+  *pnVal = sqlite3BtreeKvValueSize(c->pCur);
   return BTREELITE_OK;
 }
 
 int btreelite_value_read(btreelite_cur *c, uint32_t offset, uint32_t amt,
                          void *pBuf){
-  if( c==0 || c->pCur==0 || !c->bValid ) return BTREELITE_ERROR;
-  if( (i64)offset+amt > c->nValLen ) return BTREELITE_ERROR;
-  return sqlite3BtreePayload(c->pCur,
-                             (u32)(c->nKeyOff + c->nKeyLen) + offset, amt, pBuf);
+  if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
+  if( sqlite3BtreeEof(c->pCur) ) return BTREELITE_ERROR;
+  return sqlite3BtreeKvValueRead(c->pCur, offset, amt, pBuf);
+}
+
+const void *btreelite_value_fetch(btreelite_cur *c, int *pAmt){
+  u32 nAmt = 0;
+  const void *p;
+  if( c==0 || c->pCur==0 || sqlite3BtreeEof(c->pCur) ) return 0;
+  p = sqlite3BtreeKvValueFetch(c->pCur, &nAmt);
+  if( pAmt ) *pAmt = (int)nAmt;
+  return p;
 }

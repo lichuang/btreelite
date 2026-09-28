@@ -196,6 +196,7 @@ static int SQLITE_NOINLINE putVarint64(unsigned char *p, u64 v){
     buf[n++] = (u8)((v & 0x7f) | 0x80);
     v >>= 7;
   }while( v );
+  buf[0] &= 0x7f;
   for(i=0; i<n/2; i++){
     j = buf[i];
     buf[i] = buf[n-1-i];
