@@ -393,20 +393,11 @@ const char *sqlite3_uri_parameter(const char*, const char*);
 char *sqlite3_snprintf(int, char*, const char*, ...);
 int sqlite3GetBoolean(const char *z, int dflt);
 
-int sqlite3BtreeIndexMoveto(BtCursor*, UnpackedRecord*, int*);
 int sqlite3BtreeKvMoveto(BtCursor*, const void*, int, int, int*);
 const void *sqlite3BtreeKvKey(BtCursor*, u32*);
 u32 sqlite3BtreeKvValueSize(BtCursor*);
 int sqlite3BtreeKvValueRead(BtCursor*, u32, u32, void*);
 const void *sqlite3BtreeKvValueFetch(BtCursor*, u32*);
-int sqlite3KvEncode(const void*, int, const void*, int, void**);
-
-/* VDBE record-compare entry points (vdbe.c in SQLite; memcmp-based
-** implementations ship in the btreelite API layer). */
-void sqlite3VdbeRecordUnpack(int,const void*,UnpackedRecord*);
-int sqlite3VdbeRecordCompare(int,const void*,UnpackedRecord*);
-UnpackedRecord *sqlite3VdbeAllocUnpackedRecord(KeyInfo*);
-RecordCompare sqlite3VdbeFindCompare(UnpackedRecord*);
 
 /* Connection-level knobs referenced by btree.c */
 #define SQLITE_CellSizeCk      0x00200000

@@ -250,17 +250,6 @@ void sqlite3BtreeCursorHint(BtCursor*, int, ...);
 #endif
 
 int sqlite3BtreeCloseCursor(BtCursor*);
-int sqlite3BtreeTableMoveto(
-  BtCursor*,
-  i64 intKey,
-  int bias,
-  int *pRes
-);
-int sqlite3BtreeIndexMoveto(
-  BtCursor*,
-  UnpackedRecord *pUnKey,
-  int *pRes
-);
 int sqlite3BtreeCursorHasMoved(BtCursor*);
 int sqlite3BtreeCursorRestore(BtCursor*, int*);
 int sqlite3BtreeDelete(BtCursor*, u8 flags);
@@ -269,7 +258,6 @@ int sqlite3BtreeDelete(BtCursor*, u8 flags);
 #define BTREE_SAVEPOSITION 0x02  /* Leave cursor pointing at NEXT or PREV */
 #define BTREE_AUXDELETE    0x04  /* not the primary delete operation */
 #define BTREE_APPEND       0x08  /* Insert is likely an append */
-#define BTREE_PREFORMAT    0x80  /* Inserted data is a preformated cell */
 
 /* An instance of the BtreePayload object describes the content of a single
 ** entry in either an index or table btree.
@@ -376,8 +364,6 @@ void sqlite3BtreeCursorList(Btree*);
 #ifndef SQLITE_OMIT_WAL
   int sqlite3BtreeCheckpoint(Btree*, int, int *, int *);
 #endif
-
-int sqlite3BtreeTransferRow(BtCursor*, BtCursor*, i64);
 
 void sqlite3BtreeClearCache(Btree*);
 

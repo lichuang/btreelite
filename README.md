@@ -55,10 +55,15 @@ values larger than one page.
       200 KB `t_big` test passes now.
 - [ ] **Remove the remaining autovacuum scaffolding** — `SQLITE_OMIT_AUTOVACUUM`
       is defined, so this is unused-symbol and warning cleanup only.
-- [ ] **Remove the intkey-only code paths** — `btreeParseCellPtr`,
-      `sqlite3BtreeTableMoveto`, `BTREE_PREFORMAT`,
-      `sqlite3BtreeTransferRow` and friends have no callers in a KV-only
-      build. Deletion is mechanical (about 800 lines).
+- [x] **Remove the intkey-only code paths** — done.  `decodeFlags` now accepts
+      only the two KV page types (0x05, 0x0d) and everything else is
+      `CORRUPT`; the table/index cell parsers (`btreeParseCellPtr`,
+      `btreeParseCellPtrNoPayload`, `btreeParseCellPtrIndex`), their
+      `cellSizePtr*` counterparts, `sqlite3BtreeTableMoveto`,
+      `sqlite3BtreeIndexMoveto`, `indexCellCompare`, `sqlite3BtreeTransferRow`
+      and the `BTREE_PREFORMAT` / `UnpackedRecord`-based moveto path were
+      deleted, along with the record-comparator stubs in
+      `btreelite_compat.c`.  About 1,300 lines gone; `make test` still passes.
 - [x] **Replace the file magic string** — done.  The file header now begins
       with `"btreelite fmt 1"` instead of `"SQLite format 3"`, so the
       `sqlite3` CLI and library reject a btreelite file with
