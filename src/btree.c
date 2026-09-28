@@ -564,6 +564,7 @@ static int cursorOwnsBtShared(BtCursor *p){
 */
 #define invalidateOverflowCache(pCur) (pCur->curFlags &= ~BTCF_ValidOvfl)
 
+#ifndef SQLITE_OMIT_AUTOVACUUM
 /*
 ** Invalidate the overflow page-list cache for all cursors opened
 ** on the shared btree structure pBt.
@@ -575,6 +576,7 @@ static void invalidateAllOverflowCache(BtShared *pBt){
     invalidateOverflowCache(p);
   }
 }
+#endif
 
 #ifndef SQLITE_OMIT_INCRBLOB
 /*
@@ -8393,7 +8395,9 @@ static int balance_nonroot(
     );
     copyNodeContent(apNew[0], pParent, &rc);
     freePage(apNew[0], &rc);
-  }else if( ISAUTOVACUUM(pBt) && !leafCorrection ){
+  }
+#ifndef SQLITE_OMIT_AUTOVACUUM
+  else if( ISAUTOVACUUM(pBt) && !leafCorrection ){
     /* Fix the pointer map entries associated with the right-child of each
     ** sibling page. All other pointer map entries have already been taken
     ** care of.  */
@@ -8402,6 +8406,7 @@ static int balance_nonroot(
       ptrmapPut(pBt, key, PTRMAP_BTREE, apNew[i]->pgno, &rc);
     }
   }
+#endif
 
   assert( pParent->isInit );
   TRACE(("BALANCE: finished: old=%u new=%u cells=%u\n",
@@ -9984,6 +9989,7 @@ static void checkList(
 }
 #endif /* SQLITE_OMIT_INTEGRITY_CHECK */
 
+#ifndef SQLITE_OMIT_INTEGRITY_CHECK
 /*
 ** An implementation of a min-heap.
 **
@@ -10036,6 +10042,7 @@ static int btreeHeapPull(u32 *aHeap, u32 *pOut){
   }
   return 1; 
 }
+#endif /* SQLITE_OMIT_INTEGRITY_CHECK */
 
 #ifndef SQLITE_OMIT_INTEGRITY_CHECK
 /*

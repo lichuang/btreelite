@@ -53,8 +53,13 @@ values larger than one page.
       extra continuation byte (`81 80 80` instead of `81 80 00`), so the
       leaf parser read a corrupt key length and the lookup missed. The
       200 KB `t_big` test passes now.
-- [ ] **Remove the remaining autovacuum scaffolding** — `SQLITE_OMIT_AUTOVACUUM`
-      is defined, so this is unused-symbol and warning cleanup only.
+- [x] **Remove the remaining autovacuum scaffolding** — done.  The
+      `invalidateAllOverflowCache` helper, the `btreeHeap*` integrity-check
+      min-heap, and the autovacuum pointer-map arm of `balance_nonroot` are
+      now wrapped in the same `SQLITE_OMIT_AUTOVACUUM` /
+      `SQLITE_OMIT_INTEGRITY_CHECK` guards as their callers, and an unused
+      `pVfs` in `pager_playback` (left over from the removed super-journal
+      replay) was dropped.  A clean build now produces no warnings.
 - [x] **Remove the intkey-only code paths** — done.  `decodeFlags` now accepts
       only the two KV page types (0x05, 0x0d) and everything else is
       `CORRUPT`; the table/index cell parsers (`btreeParseCellPtr`,

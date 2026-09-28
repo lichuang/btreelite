@@ -2511,7 +2511,6 @@ static void setSectorSize(Pager *pPager){
 ** needed.
 */
 static int pager_playback(Pager *pPager, int isHot){
-  sqlite3_vfs *pVfs = pPager->pVfs;
   i64 szJ;                 /* Size of the journal file in bytes */
   u32 nRec;                /* Number of Records in the journal */
   u32 u;                   /* Unsigned loop counter */
