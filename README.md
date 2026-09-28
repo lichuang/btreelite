@@ -45,14 +45,28 @@ values larger than one page.
 
 ## TODO
 
-- [x] **Large values spanning overflow pages** — fixed. The overflow path
-      itself was correct; the defect was in `putVarint64()` (`src/util.c`),
-      which omitted the `buf[0] &= 0x7f` step that clears the continuation
-      bit of a multi-byte varint's most-significant byte. Any value of
-      `16384` bytes or more therefore encoded its `nValue` header as an
-      extra continuation byte (`81 80 80` instead of `81 80 00`), so the
-      leaf parser read a corrupt key length and the lookup missed. The
-      200 KB `t_big` test passes now.
+- [x] **Large values spanning overflow pages (varint encoding)** — fixed.
+      The overflow path itself was correct; the defect was in
+      `putVarint64()` (`src/util.c`), which omitted the `buf[0] &= 0x7f`
+      step that clears the continuation bit of a multi-byte varint's
+      most-significant byte. Any value of `16384` bytes or more therefore
+      encoded its `nValue` header as an extra continuation byte
+      (`81 80 80` instead of `81 80 00`), so the leaf parser read a corrupt
+      key length and the lookup missed. The 200 KB `t_big` test passes now.
+- [x] **Lookup misses when a small value shares a leaf with an over-maxLeaf
+      value** — fixed.  The `balance_quick()` fast path built the interior
+      divider by copying the *intkey* varint from the right-most cell (it
+      skipped the `nPayload` varint and then copied the next one).  For a KV
+      cell `[nValue][nKeyLen][key][value]` that copied `nKeyLen` instead of
+      the key, so the divider carried a garbage key and lookups descended
+      past the small key.  Only leaves with a single trailing overflow cell
+      (exactly the `<= maxLeaf` + overflow neighbour shape) took that path,
+      which is why values `4060 + 16384` missed while `4062 + 16384` did not.
+      Fix: btreelite KV pages now skip the `balance_quick()` fast path and
+      route to `balance_nonroot()`, which builds the divider from the real KV
+      key (as the redesign doc §4.7 had prescribed).  `t_big` gained a
+      regression case covering values straddling `maxLeaf`; it fails without
+      the fix and passes with it.
 - [x] **Remove the remaining autovacuum scaffolding** — done.  The
       `invalidateAllOverflowCache` helper, the `btreeHeap*` integrity-check
       min-heap, and the autovacuum pointer-map arm of `balance_nonroot` are

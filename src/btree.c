@@ -8600,7 +8600,8 @@ static int balance(BtCursor *pCur){
       }
       if( rc==SQLITE_OK ){
 #ifndef SQLITE_OMIT_QUICKBALANCE
-        if( pPage->intKeyLeaf
+        if( !(pPage->pBt->btsFlags & BTS_KV)
+         && pPage->intKeyLeaf
          && pPage->nOverflow==1
          && pPage->aiOvfl[0]==pPage->nCell
          && pParent->pgno!=1

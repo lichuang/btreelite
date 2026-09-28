@@ -152,8 +152,15 @@ memcpy(&pCell[4+varintLen], info.pKey, info.nKeyLen);
 ### 4.7 balance_quick（btree.c:8007）
 
 原生从 intkey 叶的最大 cell 取整数 key 造 divider。KV 下其 key 提取逻辑
-不适用 → **KV 时禁用 balance_quick**，直接走 balance_nonroot（性能优化项，
-不影响正确性）。判定：`pPage->intKeyLeaf && !KV`。
+不适用 → **KV 时禁用 balance_quick**，直接走 balance_nonroot。判定：
+`!(pPage->pBt->btsFlags & BTS_KV) && pPage->intKeyLeaf`。
+
+> **状态：已实现。** 该项最初漏做，导致一个真实缺陷：当某叶子上有
+> 「value ≤ maxLeaf 的条目 + 一个溢出大 value」时走 balance_quick，divider
+> 由 intkey 逻辑构造出**垃圾 key**（拷到了 `nKeyLen` 而非 key 字节），
+> 查找会越过小 key 返回 NOTFOUND。修法即本节所述：KV 页跳过 fast path、
+> 走 balance_nonroot（它由真实 KV key 构造 divider）。回归测试见
+> `test/t_big.c`。
 
 ### 4.8 saveCursorKey（btree.c:714）
 
