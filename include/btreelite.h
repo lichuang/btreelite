@@ -265,8 +265,20 @@ int btreelite_integrity_check(btreelite_db *p, unsigned iRoot, int mxErr,
                               int *pnErr, char **pzOut);
 
 /*
-** Select the journal mode at run time.  eMode: 0=DELETE, 1=PERSIST,
-** 2=OFF, 3=TRUNCATE, 4=MEMORY, 5=WAL.  Returns the resulting mode.
+** Journal modes for btreelite_journal_mode().  Values match SQLite's
+** PRAGMA journal_mode; 5 selects write-ahead log (WAL) mode.  WAL
+** transitions must happen outside a transaction.
+*/
+#define BTREELITE_JOURNAL_DELETE   0   /* Rollback journal, deleted on commit */
+#define BTREELITE_JOURNAL_PERSIST  1   /* Rollback journal, zeroed and kept */
+#define BTREELITE_JOURNAL_OFF      2   /* No journal: not crash-safe */
+#define BTREELITE_JOURNAL_TRUNCATE 3   /* Rollback journal, truncated to zero */
+#define BTREELITE_JOURNAL_MEMORY   4   /* In-memory journal: not durable */
+#define BTREELITE_JOURNAL_WAL      5   /* Write-ahead log */
+
+/*
+** Select the journal mode at run time.  eMode is one of the
+** BTREELITE_JOURNAL_* constants above.  Returns the resulting mode.
 */
 int btreelite_journal_mode(btreelite_db *p, int eMode);
 

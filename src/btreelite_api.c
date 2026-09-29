@@ -40,6 +40,10 @@ struct btreelite_cur {
   Pgno iRoot;
 };
 
+/* Run the WAL autocheckpoint hook if a commit since the last pass added
+** frames to the WAL.  Defined below; invoked by commit/rollback below. */
+static void btreeliteWalCallback(btreelite_db *p);
+
 void btreelite_free(void *p){ sqlite3_free(p); }
 
 /*
@@ -134,12 +138,18 @@ int btreelite_begin(btreelite_db *p, int wrflag){
   return sqlite3BtreeBeginTrans(p->pBt, wrflag, 0);
 }
 int btreelite_commit(btreelite_db *p){
+  int rc;
   if( p==0 ) return BTREELITE_ERROR;
-  return sqlite3BtreeCommit(p->pBt);
+  rc = sqlite3BtreeCommit(p->pBt);
+  if( rc==SQLITE_OK ) btreeliteWalCallback(p);
+  return rc;
 }
 int btreelite_rollback(btreelite_db *p){
+  int rc;
   if( p==0 ) return BTREELITE_ERROR;
-  return sqlite3BtreeRollback(p->pBt, SQLITE_OK, 0);
+  rc = sqlite3BtreeRollback(p->pBt, SQLITE_OK, 0);
+  if( rc==SQLITE_OK ) btreeliteWalCallback(p);
+  return rc;
 }
 int btreelite_txn_state(btreelite_db *p){
   if( p==0 ) return 0;
@@ -222,9 +232,97 @@ int btreelite_checkpoint(btreelite_db *p, int eMode, int *pnLog, int *pnCkpt){
   return sqlite3BtreeCheckpoint(p->pBt, eMode, pnLog, pnCkpt);
 }
 
+/*
+** One btreeliteWalCallback() pass: collect the number of frames the last
+** commit added to the WAL and pass it to the hook, which checkpoints when
+** the count reaches the configured threshold (upstream doWalCallbacks).
+*/
+static void btreeliteWalCallback(btreelite_db *p){
+  int nEntry;
+  Btree *pBt = p->pBt;
+  sqlite3BtreeEnter(pBt);
+  nEntry = sqlite3PagerWalCallback(sqlite3BtreePager(pBt));
+  sqlite3BtreeLeave(pBt);
+  if( nEntry>0 && p->env.xWalCallback!=0 ){
+    p->env.xWalCallback(p->env.pWalArg, &p->env, 0, nEntry);
+  }
+}
+
 int btreelite_journal_mode(btreelite_db *p, int eMode){
+  int eOld, rc;
+  Pager *pPager;
   if( p==0 ) return BTREELITE_ERROR;
-  return sqlite3PagerSetJournalMode(sqlite3BtreePager(p->pBt), eMode);
+  if( eMode<0 || eMode>BTREELITE_JOURNAL_WAL ) return BTREELITE_ERROR;
+  pPager = sqlite3BtreePager(p->pBt);
+
+  /* An in-memory database only supports MEMORY or OFF. */
+  if( sqlite3PagerIsMemdb(pPager) && eMode!=BTREELITE_JOURNAL_MEMORY
+   && eMode!=BTREELITE_JOURNAL_OFF ){
+    eMode = sqlite3PagerGetJournalMode(pPager);
+  }else if( !sqlite3PagerWalSupported(pPager) && eMode==BTREELITE_JOURNAL_WAL ){
+    eMode = sqlite3PagerGetJournalMode(pPager);
+  }
+
+  eOld = sqlite3PagerGetJournalMode(pPager);
+  if( eMode==eOld ) return eMode;
+
+  /* WAL transitions must happen outside a transaction.  Upstream
+  ** OP_JournalMode refuses them with a plain error.  Non-WAL to non-WAL
+  ** changes are allowed anytime and need no version flip. */
+  if( (eOld==BTREELITE_JOURNAL_WAL || eMode==BTREELITE_JOURNAL_WAL)
+   && sqlite3BtreeTxnState(p->pBt)!=SQLITE_TXN_NONE ){
+    return BTREELITE_ERROR;
+  }
+
+  /* Upstream OP_JournalMode closes the log (checkpointing it) before
+  ** switching out of WAL, and routes MEMORY->WAL through OFF because the
+  ** pager cannot frame an in-memory journal. */
+  if( eOld==BTREELITE_JOURNAL_WAL ){
+    rc = sqlite3PagerCloseWal(pPager, &p->env);
+  }else if( eOld==BTREELITE_JOURNAL_MEMORY && eMode==BTREELITE_JOURNAL_WAL ){
+    sqlite3PagerSetJournalMode(pPager, BTREELITE_JOURNAL_OFF);
+    rc = SQLITE_OK;
+  }else{
+    rc = SQLITE_OK;
+  }
+  if( rc!=SQLITE_OK ) return sqlite3PagerGetJournalMode(pPager);
+
+  rc = sqlite3BtreeSetVersion(p->pBt,
+                  eMode==BTREELITE_JOURNAL_WAL ? 2 : 1);
+  {
+    int rc2 = SQLITE_OK;
+    if( rc==SQLITE_OK
+     && sqlite3BtreeTxnState(p->pBt)!=SQLITE_TXN_NONE ){
+      /* sqlite3BtreeSetVersion() leaves its implicit write transaction
+      ** open; commit it so the version bytes reach the file.  Upstream
+      ** gets this from statement finalization, which btreelite does
+      ** not have. */
+      rc2 = sqlite3BtreeCommit(p->pBt);
+    }
+    if( rc2!=SQLITE_OK ){
+      return sqlite3PagerGetJournalMode(pPager);
+    }
+  }
+  if( eMode==BTREELITE_JOURNAL_WAL ){
+    /* Open the WAL connection eagerly.  lockBtree opens it on a page-1
+    ** read, but that read is skipped whenever pPage1 is already cached,
+    ** so the WAL would otherwise stay closed on this handle. */
+    int isOpen = 0;
+    rc = sqlite3PagerOpenWal(pPager, &isOpen);
+    if( rc!=SQLITE_OK ) return sqlite3PagerGetJournalMode(pPager);
+  }
+  return sqlite3PagerSetJournalMode(pPager, eMode);
+}
+
+void btreelite_wal_autocheckpoint(btreelite_db *p, int nFrames){
+  if( p==0 ) return;
+  if( nFrames>0 ){
+    p->env.xWalCallback = sqlite3WalDefaultHook;
+    p->env.pWalArg = SQLITE_INT_TO_PTR(nFrames);
+  }else{
+    p->env.xWalCallback = 0;
+    p->env.pWalArg = 0;
+  }
 }
 
 void btreelite_set_interrupt(btreelite_db *p){
@@ -232,7 +330,8 @@ void btreelite_set_interrupt(btreelite_db *p){
 }
 
 void btreelite_busy_timeout(btreelite_db *p, int ms){
-  (void)p; (void)ms;
+  if( p==0 ) return;
+  sqlite3_busy_timeout(&p->env, ms);
 }
 
 int btreelite_del(btreelite_cur *c, const void *k, int nK){

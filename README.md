@@ -87,6 +87,17 @@ values larger than one page.
       with `"btreelite fmt 1"` instead of `"SQLite format 3"`, so the
       `sqlite3` CLI and library reject a btreelite file with
       "file is not a database", and vice versa.
+- [x] **Wire up WAL (Phase 3)** — done.  `btreelite_journal_mode()` now
+      performs the full `PRAGMA journal_mode` transition instead of only
+      flipping the pager flag: it refuses WAL transitions inside a
+      transaction, closes (and checkpoints) the log when leaving WAL,
+      routes MEMORY→WAL through OFF, rewrites the file-header version
+      bytes via `sqlite3BtreeSetVersion()`, and then opens the WAL
+      connection eagerly.  `btreelite_wal_autocheckpoint()` and
+      `btreelite_busy_timeout()` gained real implementations.  The
+      acceptance test `test/t_wal.c` covers commits through the log, all
+      four checkpoint modes, crash recovery from an uncommitted child
+      process, automatic checkpointing, and leaving WAL mode.
 
 ## License
 

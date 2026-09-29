@@ -793,6 +793,11 @@ struct sqlite3 {
     double notUsed1;
   } u1;
   BusyHandler busyHandler;
+  /* WAL autocheckpoint hook: invoked with the frame count after each
+  ** commit (see btreelite_commit / btreelite_rollback). */
+  int (*xWalCallback)(void*, struct sqlite3*, const char*, int);
+  void *pWalArg;                /* First argument for xWalCallback */
+  int busyTimeout;              /* Busy handler timeout, in msec */
   void *pAutovacPagesArg;           /* unused stub for btree.c signature */
   void (*xAutovacDestr)(void*);
   unsigned int (*xAutovacPages)(void*,const char*,u32,u32,u32);

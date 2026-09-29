@@ -67,8 +67,103 @@ int sqlite3IoerrnomemError(int lineno){
 ** BusyHandler object registered via sqlite3PagerSetBusyHandler().
 */
 int sqlite3InvokeBusyHandler(BusyHandler *p){
-  if( NEVER(p==0) || p->xBusyHandler==0 ) return 0;
-  return p->xBusyHandler(p->pBusyArg, p->nBusy);
+  int rc;
+  if( NEVER(p==0) || p->xBusyHandler==0 || p->nBusy<0 ) return 0;
+  rc = p->xBusyHandler(p->pBusyArg, p->nBusy);
+  if( rc==0 ){
+    p->nBusy = -1;
+  }else{
+    p->nBusy++;
+  }
+  return rc;
+}
+
+/*
+** Default busy handler (from main.c): sleep the caller for progressively
+** longer intervals until the accumulated delay reaches the timeout.
+*/
+static int sqliteDefaultBusyCallback(
+  void *ptr,               /* Database connection */
+  int count                /* Number of times table has been busy */
+){
+  static const u8 delays[] =
+     { 1, 2, 5, 10, 15, 20, 25, 25,  25,  50,  50, 100 };
+  static const u8 totals[] =
+     { 0, 1, 3,  8, 18, 33, 53, 78, 103, 128, 178, 228 };
+# define NDELAY ArraySize(delays)
+  sqlite3 *db = (sqlite3 *)ptr;
+  int tmout = db->busyTimeout;
+  int delay, prior;
+
+  assert( count>=0 );
+  if( count < NDELAY ){
+    delay = delays[count];
+    prior = totals[count];
+  }else{
+    delay = delays[NDELAY-1];
+    prior = totals[NDELAY-1] + delay*(count-(NDELAY-1));
+  }
+  if( prior + delay > tmout ){
+    delay = tmout - prior;
+    if( delay<=0 ) return 0;
+  }
+  /* btreelite: the sqlite3 stub carries no pVfs member, so the handler
+  ** sleeps on the process-wide default VFS. */
+  sqlite3OsSleep(sqlite3_vfs_find(0), delay*1000);
+  return 1;
+}
+
+void *sqlite3_wal_hook(
+  sqlite3 *db,
+  int(*xCallback)(void *, sqlite3*, const char*, int),
+  void *pArg
+);
+
+int sqlite3_busy_handler(sqlite3 *db, int (*xBusy)(void*,int), void *pArg){
+  sqlite3_mutex_enter(db->mutex);
+  db->busyHandler.xBusyHandler = xBusy;
+  db->busyHandler.pBusyArg = pArg;
+  db->busyHandler.nBusy = 0;
+  db->busyTimeout = 0;
+  sqlite3_mutex_leave(db->mutex);
+  return SQLITE_OK;
+}
+
+/*
+** Install a default busy handler that waits for the specified number of
+** milliseconds before giving up (from main.c/sqlite3_busy_timeout).
+*/
+int sqlite3_busy_timeout(sqlite3 *db, int ms){
+  sqlite3_mutex_enter(db->mutex);
+  if( ms>0 ){
+    sqlite3_busy_handler(db, sqliteDefaultBusyCallback, (void*)db);
+    db->busyTimeout = ms;
+  }else{
+    sqlite3_busy_handler(db, 0, 0);
+  }
+  sqlite3_mutex_leave(db->mutex);
+  return SQLITE_OK;
+}
+
+/*
+** WAL hook registered by sqlite3_wal_autocheckpoint: checkpoint when the
+** log has grown to (at least) the configured number of frames
+** (from main.c/sqlite3WalDefaultHook).
+*/
+int sqlite3WalDefaultHook(
+  void *pClientData,     /* Argument */
+  sqlite3 *db,           /* Connection */
+  const char *zDb,       /* Database (0 = the only one, in btreelite) */
+  int nFrame             /* Size of WAL */
+){
+  Btree *pBt = db->aDb[0].pBt;
+  (void)zDb;
+  if( nFrame>=SQLITE_PTR_TO_INT(pClientData) ){
+    sqlite3BeginBenignMalloc();
+    sqlite3BtreeCheckpoint(pBt, SQLITE_CHECKPOINT_PASSIVE, 0, 0);
+    sqlite3EndBenignMalloc();
+  }
+  return SQLITE_OK;
 }
 
 /*
