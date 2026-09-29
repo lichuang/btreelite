@@ -17,8 +17,9 @@
 **      cursor in a write transaction, then committed;
 **   2. the committed entries are read back from disk in a fresh transaction;
 **   3. a rolled-back write transaction leaves the database unchanged;
-**   4. a hot journal left behind by a simulated crash is replayed on the
-**      next open.
+**   4. the database recovers from a crash: a child process that dies with
+**      an uncommitted transaction open leaves the committed data intact on
+**      the next open.
 */
 #include "../include/btreelite.h"
 
@@ -166,7 +167,7 @@ static void testRollback(const char *zFile){
   btreelite_close(db);
 }
 
-static void testHotJournal(const char *zFile){
+static void testCrashRecovery(const char *zFile){
   btreelite_db *db = 0;
   btreelite_cur *cur = 0;
   int rc, nRow = 0, status;
@@ -185,7 +186,7 @@ static void testHotJournal(const char *zFile){
       btreelite_put(cc, zKey, nKey, "dirty-uncommitted-payload", 25);
       btreelite_cursor_close(cc);
     }
-    /* Exit without commit: leaves a hot journal behind. */
+    /* Exit without commit: the next open discards the open transaction. */
     _exit(0);
   }
   waitpid(pid, &status, 0);
@@ -209,13 +210,17 @@ int main(void){
   const char *zFile = "t_smoke.db";
   unlink(zFile);
   unlink("t_smoke.db-journal");
+  unlink("t_smoke.db-wal");
+  unlink("t_smoke.db-shm");
 
   testCommitPersist(zFile);
   testRollback(zFile);
-  testHotJournal(zFile);
+  testCrashRecovery(zFile);
 
   unlink(zFile);
   unlink("t_smoke.db-journal");
+  unlink("t_smoke.db-wal");
+  unlink("t_smoke.db-shm");
 
   printf("%d checks, %d failures\n", nTest, nFail);
   return nFail ? 1 : 0;

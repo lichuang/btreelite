@@ -13,8 +13,11 @@ removed entirely.
   binary comparison (memcmp). Values are arbitrary byte strings.
 - **Multiple trees**: one database file can contain many B-trees, each
   identified by its root page number.
-- **ACID transactions**: inherited from SQLite's rollback journal and WAL
-  crash recovery.
+- **ACID transactions**: inherited from SQLite's write-ahead log.  WAL is
+  the default (and durable `synchronous=FULL`, matching SQLite's default);
+  `btreelite_journal_mode()` exposes only WAL and MEMORY, and an in-memory
+  database or an environment that cannot host the WAL shared-memory index
+  falls back to MEMORY automatically.
 - **Concurrency**: in-process multi-threading plus cross-process file
   locking, inherited from SQLite.
 - **File format**: same page/cell layout as SQLite, with a different magic
@@ -42,6 +45,63 @@ overflow pages.  See
 [docs/kv-format-redesign.md](docs/kv-format-redesign.md).  With that in
 place `make test` passes in full (`t_smoke`, `t_kv`, `t_big`), including
 values larger than one page.
+
+## Journal modes
+
+btreelite exposes exactly two journal modes; the rest of SQLite's are
+deliberately omitted.
+
+| Mode | Role in btreelite |
+|---|---|
+| `BTREELITE_JOURNAL_WAL` | The default for every file-backed database. |
+| `BTREELITE_JOURNAL_MEMORY` | Fallback for in-memory databases and for environments that cannot host the WAL shared-memory index. |
+
+### Why WAL is the default (a deliberate departure from SQLite)
+
+SQLite's own default is `journal_mode=DELETE`; WAL is only entered after an
+explicit `PRAGMA journal_mode=WAL`, though once set it is *persistent* (the
+choice is recorded in the file header).  btreelite instead turns WAL on at
+`btreelite_open()`, because for a file-backed database WAL is a strict
+superset of every rollback-journal mode:
+
+| Property | DELETE / TRUNCATE / PERSIST | WAL |
+|---|---|---|
+| Atomic commit and rollback | yes | yes |
+| Crash safety (no corruption) | yes | yes |
+| Durable at `synchronous=FULL` | yes | yes |
+| Readers not blocked by a writer | **no** (writer takes EXCLUSIVE) | **yes** (snapshot isolation) |
+| Write amplification | 2x (read old page, then write) | 1x (sequential append) |
+| `fsync()` per commit | more | fewer |
+| Survives reopen as the same mode | no (resets to DELETE) | yes (persistent) |
+| `-shm` shared memory required | no | **yes** |
+| Usable on a network filesystem | yes | **no** |
+
+DELETE, TRUNCATE and PERSIST are the *same* capability — a disk rollback
+journal — differing only in how the journal is finalized on commit (deleted,
+truncated to zero, or header zeroed).  That is a tuning knob, not a feature,
+so omitting them costs nothing.  `OFF` is omitted because it disables atomic
+commit entirely (ROLLBACK is undefined and ordinary writes can corrupt the
+file).  `MEMORY` is the one mode WAL cannot replace — it is the only option
+with no on-disk journal — so it is kept as the automatic fallback.
+
+### Consequence: WAL is sticky
+
+Because WAL state lives in the file header (`version=2`), the first time a
+database is opened by btreelite it is converted to WAL and stays that way —
+including when it is later opened by stock SQLite.  The `-wal` and `-shm`
+companion files should be expected alongside the database.
+
+### Risk: the MEMORY fallback is not crash-safe
+
+When a **file-backed** database runs where WAL is unavailable (a VFS with no
+`-shm` support, or a `nolock` URI), btreelite silently falls back to MEMORY.
+MEMORY keeps `ROLLBACK` working but stores the rollback journal in RAM, so a
+crash or power loss in the middle of a transaction will very likely corrupt
+the database (this is SQLite's documented behavior, not a btreelite
+regression).  Applications that need crash safety on such filesystems should
+not use btreelite, or must ensure the environment can host the WAL.  The
+same applies to in-memory databases, where there is nothing to recover
+anyway.
 
 ## TODO
 
@@ -89,15 +149,17 @@ values larger than one page.
       "file is not a database", and vice versa.
 - [x] **Wire up WAL (Phase 3)** — done.  `btreelite_journal_mode()` now
       performs the full `PRAGMA journal_mode` transition instead of only
-      flipping the pager flag: it refuses WAL transitions inside a
-      transaction, closes (and checkpoints) the log when leaving WAL,
-      routes MEMORY→WAL through OFF, rewrites the file-header version
-      bytes via `sqlite3BtreeSetVersion()`, and then opens the WAL
-      connection eagerly.  `btreelite_wal_autocheckpoint()` and
-      `btreelite_busy_timeout()` gained real implementations.  The
-      acceptance test `test/t_wal.c` covers commits through the log, all
-      four checkpoint modes, crash recovery from an uncommitted child
-      process, automatic checkpointing, and leaving WAL mode.
+      flipping the pager flag: it refuses mode changes inside a transaction,
+      closes (and checkpoints) the log when leaving WAL, reroutes MEMORY→WAL
+      through OFF, rewrites the file-header version bytes via
+      `sqlite3BtreeSetVersion()`, and then opens the WAL connection eagerly.
+      `btreelite_wal_autocheckpoint()` and `btreelite_busy_timeout()` gained
+      real implementations.  The journal-mode surface was then narrowed to
+      WAL (the default) and MEMORY (the fallback); see the *Journal modes*
+      section above.  The acceptance test `test/t_wal.c` covers commits
+      through the log, all four checkpoint modes, crash recovery from an
+      uncommitted child process, automatic checkpointing, and leaving WAL
+      mode.
 
 ## License
 

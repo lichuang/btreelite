@@ -265,20 +265,27 @@ int btreelite_integrity_check(btreelite_db *p, unsigned iRoot, int mxErr,
                               int *pnErr, char **pzOut);
 
 /*
-** Journal modes for btreelite_journal_mode().  Values match SQLite's
-** PRAGMA journal_mode; 5 selects write-ahead log (WAL) mode.  WAL
-** transitions must happen outside a transaction.
+** Journal modes for btreelite_journal_mode().  btreelite offers exactly two:
+**
+**   BTREELITE_JOURNAL_WAL     write-ahead logging: crash-safe, durable
+**                             (synchronous=FULL by default) and the default
+**                             for every file-backed database;
+**   BTREELITE_JOURNAL_MEMORY  the rollback journal is held in RAM.  This is
+**                             used automatically for in-memory databases and
+**                             when the environment cannot support WAL, and it
+**                             is NOT crash-safe.
+**
+** Values match SQLite's PRAGMA journal_mode.  A WAL transition must be made
+** outside a transaction.
 */
-#define BTREELITE_JOURNAL_DELETE   0   /* Rollback journal, deleted on commit */
-#define BTREELITE_JOURNAL_PERSIST  1   /* Rollback journal, zeroed and kept */
-#define BTREELITE_JOURNAL_OFF      2   /* No journal: not crash-safe */
-#define BTREELITE_JOURNAL_TRUNCATE 3   /* Rollback journal, truncated to zero */
-#define BTREELITE_JOURNAL_MEMORY   4   /* In-memory journal: not durable */
-#define BTREELITE_JOURNAL_WAL      5   /* Write-ahead log */
+#define BTREELITE_JOURNAL_MEMORY   4   /* In-memory journal: not crash-safe */
+#define BTREELITE_JOURNAL_WAL      5   /* Write-ahead log (the default) */
 
 /*
-** Select the journal mode at run time.  eMode is one of the
-** BTREELITE_JOURNAL_* constants above.  Returns the resulting mode.
+** Select the journal mode at run time.  eMode must be BTREELITE_JOURNAL_WAL
+** or BTREELITE_JOURNAL_MEMORY; any other value is rejected with
+** BTREELITE_ERROR.  Returns the resulting mode, which is MEMORY rather than
+** WAL when the database is in memory or the environment cannot support WAL.
 */
 int btreelite_journal_mode(btreelite_db *p, int eMode);
 

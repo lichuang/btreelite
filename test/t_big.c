@@ -15,7 +15,7 @@ static int nFail = 0, nTest = 0;
 int main(void){
   btreelite_db *db=0; btreelite_cur *cur=0; unsigned root=0;
   char key[64], val[256];
-  int rc, i, res=0;
+  int rc, i;
   unlink("t_big.db");
   rc = btreelite_open("t_big.db",&db);
   CHECK(rc==0);

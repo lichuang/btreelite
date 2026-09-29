@@ -86,7 +86,11 @@ int btreelite_open(const char *zPath, btreelite_db **ppDb){
   sqlite3_mutex_enter((*ppDb)->env.mutex);
   rc = sqlite3BtreeOpen(sqlite3_vfs_find(0), zPath, &(*ppDb)->env,
                         &(*ppDb)->pBt, 0, vfsFlags);
-  if( rc!=SQLITE_OK ){
+  if( rc==SQLITE_OK ){
+    /* WAL is the default.  journal_mode() falls back to MEMORY by itself
+    ** for an in-memory database or an environment that cannot host a WAL. */
+    btreelite_journal_mode(*ppDb, BTREELITE_JOURNAL_WAL);
+  }else{
     sqlite3_mutex_leave((*ppDb)->env.mutex);
     sqlite3_mutex_free((*ppDb)->env.mutex);
     sqlite3_free((*ppDb)->env.aDb);
@@ -252,35 +256,35 @@ int btreelite_journal_mode(btreelite_db *p, int eMode){
   int eOld, rc;
   Pager *pPager;
   if( p==0 ) return BTREELITE_ERROR;
-  if( eMode<0 || eMode>BTREELITE_JOURNAL_WAL ) return BTREELITE_ERROR;
+  if( eMode!=BTREELITE_JOURNAL_WAL
+   && eMode!=BTREELITE_JOURNAL_MEMORY ){
+    return BTREELITE_ERROR;
+  }
   pPager = sqlite3BtreePager(p->pBt);
 
-  /* An in-memory database only supports MEMORY or OFF. */
-  if( sqlite3PagerIsMemdb(pPager) && eMode!=BTREELITE_JOURNAL_MEMORY
-   && eMode!=BTREELITE_JOURNAL_OFF ){
-    eMode = sqlite3PagerGetJournalMode(pPager);
-  }else if( !sqlite3PagerWalSupported(pPager) && eMode==BTREELITE_JOURNAL_WAL ){
-    eMode = sqlite3PagerGetJournalMode(pPager);
+  /* WAL needs a shared-memory index, so an in-memory database (and any
+  ** environment whose VFS cannot host one) falls back to MEMORY. */
+  if( eMode==BTREELITE_JOURNAL_WAL
+   && (sqlite3PagerIsMemdb(pPager) || !sqlite3PagerWalSupported(pPager)) ){
+    eMode = BTREELITE_JOURNAL_MEMORY;
   }
 
   eOld = sqlite3PagerGetJournalMode(pPager);
   if( eMode==eOld ) return eMode;
 
   /* WAL transitions must happen outside a transaction.  Upstream
-  ** OP_JournalMode refuses them with a plain error.  Non-WAL to non-WAL
-  ** changes are allowed anytime and need no version flip. */
-  if( (eOld==BTREELITE_JOURNAL_WAL || eMode==BTREELITE_JOURNAL_WAL)
-   && sqlite3BtreeTxnState(p->pBt)!=SQLITE_TXN_NONE ){
+  ** OP_JournalMode refuses them with a plain error. */
+  if( sqlite3BtreeTxnState(p->pBt)!=SQLITE_TXN_NONE ){
     return BTREELITE_ERROR;
   }
 
   /* Upstream OP_JournalMode closes the log (checkpointing it) before
-  ** switching out of WAL, and routes MEMORY->WAL through OFF because the
-  ** pager cannot frame an in-memory journal. */
-  if( eOld==BTREELITE_JOURNAL_WAL ){
+  ** switching out of WAL.  MEMORY->WAL additionally passes through OFF:
+  ** the pager cannot frame an in-memory journal. */
+  if( eOld==PAGER_JOURNALMODE_WAL ){
     rc = sqlite3PagerCloseWal(pPager, &p->env);
-  }else if( eOld==BTREELITE_JOURNAL_MEMORY && eMode==BTREELITE_JOURNAL_WAL ){
-    sqlite3PagerSetJournalMode(pPager, BTREELITE_JOURNAL_OFF);
+  }else if( eOld==PAGER_JOURNALMODE_MEMORY && eMode==BTREELITE_JOURNAL_WAL ){
+    sqlite3PagerSetJournalMode(pPager, PAGER_JOURNALMODE_OFF);
     rc = SQLITE_OK;
   }else{
     rc = SQLITE_OK;

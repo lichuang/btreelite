@@ -46,7 +46,10 @@ static int nTest = 0;
 /*
 ** Open zPath and set WAL mode on the new handle.
 */
-static btreelite_db *openWalDb(const char *zPath){
+/*
+** Open zPath and confirm that it comes up in WAL mode by default.
+*/
+static btreelite_db *openDefaultWalDb(const char *zPath){
   btreelite_db *db = 0;
   int rc = btreelite_open(zPath, &db);
   if( rc!=BTREELITE_OK ) return 0;
@@ -153,7 +156,7 @@ int main(void){
 
   unlink(ZDB); unlink(ZWAL); unlink(ZJRNL); unlink(ZSHM);
 
-  db = openWalDb(ZDB);
+  db = openDefaultWalDb(ZDB);
   CHECK( db!=0 );
   if( db==0 ){ return 1; }
   rc = btreelite_begin(db, 1);
@@ -213,7 +216,7 @@ int main(void){
     int crashStatus = 0;
     pid = fork();
     if( pid==0 ){
-      btreelite_db *cDb = openWalDb(ZDB);
+      btreelite_db *cDb = openDefaultWalDb(ZDB);
       if( cDb ){
         btreelite_cur *crash = 0;
         char zKey[64];
@@ -260,13 +263,13 @@ int main(void){
     CHECK( nCount==71 );   /* seed + 0..59 + 71..80 */
   }
 
-  /* 5. Leave WAL mode: log is checkpointed and removed. */
+  /* 5. Leave WAL mode: log is checkpointed and removed, version bytes 1. */
   {
     FILE *f;
     unsigned char hdr[100];
     int nRow = 0;
-    rc = btreelite_journal_mode(db, BTREELITE_JOURNAL_DELETE);
-    CHECK( rc==BTREELITE_JOURNAL_DELETE );
+    rc = btreelite_journal_mode(db, BTREELITE_JOURNAL_MEMORY);
+    CHECK( rc==BTREELITE_JOURNAL_MEMORY );
     CHECK( access(ZWAL, 0)!=0 );
     rc = countEntries(db, iRoot, &nRow);
     CHECK( rc==BTREELITE_OK );
@@ -280,16 +283,29 @@ int main(void){
     }
   }
 
-  /* 6. WAL transitions inside a transaction are refused. */
+  /* 6. Journal-mode changes inside a transaction are refused. */
   {
     rc = btreelite_open(ZDB, &db);
     CHECK( rc==BTREELITE_OK );
+    rc = btreelite_journal_mode(db, BTREELITE_JOURNAL_WAL);
+    CHECK( rc==BTREELITE_JOURNAL_WAL );   /* WAL is already the default */
     rc = btreelite_begin(db, 1);
     CHECK( rc==BTREELITE_OK );
-    rc = btreelite_journal_mode(db, BTREELITE_JOURNAL_WAL);
+    rc = btreelite_journal_mode(db, BTREELITE_JOURNAL_MEMORY);
     CHECK( rc==BTREELITE_ERROR );
     rc = btreelite_rollback(db);
     CHECK( rc==BTREELITE_OK );
+    btreelite_close(db);
+  }
+
+  /* 6b. An out-of-range mode is rejected. */
+  {
+    rc = btreelite_open(ZDB, &db);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_journal_mode(db, 0);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_journal_mode(db, 3);
+    CHECK( rc==BTREELITE_ERROR );
     btreelite_close(db);
   }
 
