@@ -137,6 +137,36 @@ void btreelite_set_interrupt(btreelite_db *p);
 /* Configure busy timeout in milliseconds (0 = default, negative = none). */
 void btreelite_busy_timeout(btreelite_db *p, int ms);
 
+/*
+** Synchronization levels for btreelite_synchronous().  Values match
+** SQLite's PRAGMA synchronous.
+**
+** In WAL (the default) mode OFF issues no fsync() at all; NORMAL syncs the
+** log at checkpoints only, so a power loss may roll back the last few
+** committed transactions but cannot corrupt the database; FULL additionally
+** syncs after every commit, making transactions durable.  The btreelite
+** default is FULL, matching SQLite.
+*/
+#define BTREELITE_SYNC_OFF     0   /* no fsync: fastest, not crash-safe */
+#define BTREELITE_SYNC_NORMAL  1   /* fsync at checkpoint only */
+#define BTREELITE_SYNC_FULL    2   /* fsync on every commit (the default) */
+
+/*
+** Select the synchronization level (a BTREELITE_SYNC_* value) used when
+** committing transactions and checkpoints.  Returns the previously set
+** level.  The default is BTREELITE_SYNC_FULL, matching SQLite's default.
+*/
+int btreelite_synchronous(btreelite_db *p, int level);
+
+/*
+** Set the number of bytes of a file-backed database that may be memory
+** mapped (0 disables mmap, the default).  Reading pages through the mapped
+** region avoids read() calls entirely; this affects read performance only,
+** and never changes the file contents.  Passing a negative value makes the
+** setting a no-op.
+*/
+void btreelite_mmap_limit(btreelite_db *p, long nLimit);
+
 /* ---------------------------------------------------------------------- */
 /* Cursors                                                                */
 /* ---------------------------------------------------------------------- */

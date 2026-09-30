@@ -876,6 +876,25 @@ typedef int (*RecordCompare)(int, const void*, UnpackedRecord*);
 /* Storage-subsystem headers: full definitions for the Pager / Btree /
 ** PCache / WAL types forward-declared above. */
 #include "pager.h"
+#ifndef SQLITE_MAX_MMAP_SIZE
+# if defined(__OpenBSD__) || defined(__QNXNTO__)
+#   define SQLITE_MAX_MMAP_SIZE 0
+# elif defined(__linux__) || defined(_WIN32) \
+    || (defined(__APPLE__) && defined(__MACH__)) \
+    || defined(__sun) || defined(__FreeBSD__) || defined(__DragonFly__)
+#   define SQLITE_MAX_MMAP_SIZE 0x7fff0000
+# else
+#   define SQLITE_MAX_MMAP_SIZE 0
+# endif
+#endif
+#ifndef SQLITE_DEFAULT_MMAP_SIZE
+# define SQLITE_DEFAULT_MMAP_SIZE 0
+#endif
+#if SQLITE_DEFAULT_MMAP_SIZE>SQLITE_MAX_MMAP_SIZE
+# undef SQLITE_DEFAULT_MMAP_SIZE
+# define SQLITE_DEFAULT_MMAP_SIZE SQLITE_MAX_MMAP_SIZE
+#endif
+
 #include "btree.h"
 #include "pcache.h"
 #include "wal.h"
@@ -927,24 +946,6 @@ typedef struct Schema Schema;
 #endif
 #ifndef SQLITE_USE_URI
 # define SQLITE_USE_URI 0
-#endif
-#ifndef SQLITE_MAX_MMAP_SIZE
-# if defined(__OpenBSD__) || defined(__QNXNTO__)
-#   define SQLITE_MAX_MMAP_SIZE 0
-# elif defined(__linux__) || defined(_WIN32) \
-    || (defined(__APPLE__) && defined(__MACH__)) \
-    || defined(__sun) || defined(__FreeBSD__) || defined(__DragonFly__)
-#   define SQLITE_MAX_MMAP_SIZE 0x7fff0000
-# else
-#   define SQLITE_MAX_MMAP_SIZE 0
-# endif
-#endif
-#ifndef SQLITE_DEFAULT_MMAP_SIZE
-# define SQLITE_DEFAULT_MMAP_SIZE 0
-#endif
-#if SQLITE_DEFAULT_MMAP_SIZE>SQLITE_MAX_MMAP_SIZE
-# undef SQLITE_DEFAULT_MMAP_SIZE
-# define SQLITE_DEFAULT_MMAP_SIZE SQLITE_MAX_MMAP_SIZE
 #endif
 #ifndef SQLITE_MAX_PAGE_SIZE
 # define SQLITE_MAX_PAGE_SIZE 65536

@@ -46,8 +46,8 @@ The KV cell format was subsequently redesigned to use the table-btree
 record format, so keys are always held locally and lookups never touch
 overflow pages.  See
 [docs/kv-format-redesign.md](docs/kv-format-redesign.md).  With that in
-place `make test` passes in full across six suites (`t_smoke`, `t_kv`,
-`t_big`, `t_wal`, `t_api`, `t_proc`).
+place `make test` passes in full across seven suites (`t_smoke`, `t_kv`,
+`t_big`, `t_wal`, `t_api`, `t_proc`, `t_dur`).
 
 ## Journal modes
 
@@ -141,6 +141,17 @@ anyway.
       parent got the lock, wrote and committed after the child released it.
 - [x] **`sqlite3BtreeIntegerKey()` dead function** — removed.  It had no
       callers: the KV accessors (`sqlite3BtreeKvKey` et al.) superseded it.
+- [x] **Phase 4 durability acceptance** — done.  `btreelite_synchronous()`
+      exposes the three crash-safety levels (OFF/NORMAL/FULL) and returns
+      the previous level; the default is FULL, matching SQLite.  The
+      durability test mixes all three levels across three write batches
+      and verifies every row reads back afterwards — changing synchronous
+      changes durability, never correctness.  `btreelite_mmap_limit()`
+      enables the memory-mapped read path, exercised both on a fresh
+      transaction and after a close/reopen cycle that re-establishes the
+      mapping.  A crash in the middle of a child's uncommitted transaction
+      was verified to lose nothing committed before it (FULL).  See
+      `test/t_dur.c`.
 
 - [x] **Large values spanning overflow pages (varint encoding)** — fixed.
       The overflow path itself was correct; the defect was in

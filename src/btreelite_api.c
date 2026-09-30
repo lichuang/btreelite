@@ -33,6 +33,7 @@
 struct btreelite_db {
   sqlite3 env;
   Btree *pBt;
+  int iSync;              /* Current BTREELITE_SYNC_* level (FULL by default) */
 };
 
 struct btreelite_cur {
@@ -83,6 +84,7 @@ int btreelite_open(const char *zPath, btreelite_db **ppDb){
   (*ppDb)->env.aDb = (Db*)sqlite3MallocZero(sizeof(Db));
   (*ppDb)->env.nDb = 1;
   (*ppDb)->env.errMask = 0xff;
+  (*ppDb)->iSync = BTREELITE_SYNC_FULL;   /* SQLite's default */
   sqlite3_mutex_enter((*ppDb)->env.mutex);
   rc = sqlite3BtreeOpen(sqlite3_vfs_find(0), zPath, &(*ppDb)->env,
                         &(*ppDb)->pBt, 0, vfsFlags);
@@ -554,3 +556,36 @@ int btreelite_mem_used(btreelite_db *p){
   if( p==0 ) return BTREELITE_ERROR;
   return (int)sqlite3StatusValue(SQLITE_STATUS_MEMORY_USED);
 }
+/*
+** Select the synchronization level used to commit transactions and
+** checkpoints, and return the previously set level.  Internally this maps
+** to the PAGER_SYNCHRONOUS_* levels SQLite's PRAGMA synchronous drives
+** (the public values are the zero-based PRAGMA numbering, the pager wants
+** a one-based flag).
+*/
+int btreelite_synchronous(btreelite_db *p, int level){
+  int iOld;
+  unsigned pgFlags;
+  if( p==0 ) return BTREELITE_ERROR;
+  if( level<BTREELITE_SYNC_OFF || level>BTREELITE_SYNC_FULL ){
+    return BTREELITE_ERROR;
+  }
+  /* The pager keeps no getter; the previous level is tracked on the
+  ** handle (initialized to FULL, SQLite's default). */
+  iOld = p->iSync;
+  pgFlags = 1 + (unsigned)level;   /* PAGER_SYNCHRONOUS_OFF=0x01 */
+  sqlite3BtreeSetPagerFlags(p->pBt, pgFlags);
+  p->iSync = level;
+  return iOld;
+}
+
+#if SQLITE_MAX_MMAP_SIZE>0
+void btreelite_mmap_limit(btreelite_db *p, long nLimit){
+  if( p==0 || nLimit<0 ) return;
+  sqlite3BtreeSetMmapLimit(p->pBt, (sqlite3_int64)nLimit);
+}
+#else
+void btreelite_mmap_limit(btreelite_db *p, long nLimit){
+  (void)p; (void)nLimit;
+}
+#endif
