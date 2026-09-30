@@ -46,8 +46,8 @@ The KV cell format was subsequently redesigned to use the table-btree
 record format, so keys are always held locally and lookups never touch
 overflow pages.  See
 [docs/kv-format-redesign.md](docs/kv-format-redesign.md).  With that in
-place `make test` passes in full across seven suites (`t_smoke`, `t_kv`,
-`t_big`, `t_wal`, `t_api`, `t_proc`, `t_dur`).
+place `make test` passes in full across eight suites (`t_smoke`, `t_kv`,
+`t_big`, `t_wal`, `t_api`, `t_proc`, `t_dur`, `t_trees`).
 
 ## Journal modes
 
@@ -152,6 +152,14 @@ anyway.
       mapping.  A crash in the middle of a child's uncommitted transaction
       was verified to lose nothing committed before it (FULL).  See
       `test/t_dur.c`.
+- [x] **Multiple trees in one file (acceptance)** — done.  `test/t_trees.c`
+      creates several trees in one file, each with a distinct root page, and
+      verifies they coexist: one write transaction fills and commits every
+      tree (and a rolled-back transaction rewrites two trees and leaves both
+      exactly as before), the same key maps to a different value in each
+      tree, `btreelite_clear_tree()` empties exactly one tree and its
+      siblings stay full, and after a close/reopen cycle every tree's rows
+      come back through the caller-persisted root page numbers.
 
 - [x] **Large values spanning overflow pages (varint encoding)** — fixed.
       The overflow path itself was correct; the defect was in
