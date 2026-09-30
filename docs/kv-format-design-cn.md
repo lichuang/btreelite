@@ -1,4 +1,6 @@
-# KV 存储格式重设计：LEAFDATA 家族 + 字节串 key
+# KV 存储格式设计：LEAFDATA 家族 + 字节串 key
+
+> 本文档为中文版；英文版见 [KV storage format design](kv-format-design.md)。
 
 ## 1. 动机
 

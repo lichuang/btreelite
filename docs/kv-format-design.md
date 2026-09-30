@@ -1,7 +1,7 @@
 # KV storage format: LEAFDATA page family with byte-string keys
 
-> This is the English edition.  The Chinese original is kept beside it as
-> [kv-format-design-cn.md](kv-format-design-cn.md).
+> This is the English edition.  The 中文 original is
+> [KV 存储格式设计](kv-format-design-cn.md).
 
 ## 1. Motivation
 
