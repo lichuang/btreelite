@@ -49,6 +49,55 @@ overflow pages.  See
 place `make test` passes in full across eight suites (`t_smoke`, `t_kv`,
 `t_big`, `t_wal`, `t_api`, `t_proc`, `t_dur`, `t_trees`).
 
+## Benchmark: btreelite (KV) vs SQLite (SQL)
+
+The extraction plan calls for a KV-vs-SQL throughput comparison.  `make
+bench` builds and runs it, producing two binaries from the *one* workload
+source, `test/bench.c`:
+
+- **`bench_kv`** — the same file compiled against `libbtreelite.a` and
+  driven through the public `btreelite_*` API on byte-string keys.
+- **`bench_sql`** — the same file compiled with `-DBENCH_SQL` against the
+  system `libsqlite3`, driven through prepared statements over an
+  `INTEGER PRIMARY KEY` table with blob values.
+
+Sharing one source is the point: both engines execute *literally the same*
+workload code, so the comparison measures the engine and its interface, not
+a difference in the driver.  The workload is four phases — point lookups,
+sequential inserts, in-place overwrites and deletes, each timed separately
+and one transaction per batch — on byte-string rowids ("row-NNNNNNNN")
+for KV and the same numbers as integer keys for SQL.  Both engines run at
+WAL and `synchronous=FULL`, so the comparison is between the storage
+machinery and the interfaces, not between durability settings.
+`make bench BENCHARG="<rows-per-batch> <batches>"` scales it; the default
+is 1,000 rows per batch in 10 batches (10,000 rows total).
+
+Measured on macOS (arm64), rows/s:
+
+| Rows inserted first | Phase | SQLite (SQL) | btreelite (KV) | KV vs SQL |
+|---|---|---|---|---|
+| 100,000 | lookup | 793,323 | **4,774,637** | **6.0x faster** |
+| 100,000 | insert | **2,115,328** | 1,615,483 | 1.31x slower |
+| 100,000 | overwrite | 2,260,756 | **3,290,231** | **1.46x faster** |
+| 100,000 | delete | 2,362,837 | **3,328,119** | **1.41x faster** |
+| 1,000,000 | lookup | 791,496 | **4,418,464** | **5.6x faster** |
+| 1,000,000 | insert | **2,013,644** | 1,626,638 | 1.24x slower |
+| 1,000,000 | overwrite | 2,279,161 | **3,186,753** | **1.40x faster** |
+| 1,000,000 | delete | 2,614,988 | **3,431,144** | **1.31x faster** |
+
+How to read it (and where the plan's "KV slightly faster" holds or not):
+
+- **Lookups are the story.**  5.6–6.0x: a KV search is a `memcmp` against a
+  byte-string key held locally on the page — no record encoding, no
+  VDBE-style dispatch.  This is the return on the KV cell redesign.
+- **Overwrites and deletes run 1.3–1.5x faster**, for the same reason:
+  no record decode on the way to the payload.
+- **Sequential inserts are the one exception** (about 1.25x slower):
+  the SQL side inserts via rowid append (`BTREE_APPEND`), which lands
+  each new row at the end of the tree in O(1); the KV side bisects for
+  every key.  Appending-like traffic (monotone keys) is where the KV
+  insert path is worth an explicit fast path, if it ever matters.
+
 ## Journal modes
 
 btreelite exposes exactly two journal modes; the rest of SQLite's are

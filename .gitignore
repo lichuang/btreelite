@@ -94,3 +94,7 @@ test/t_*
 *.db-wal
 *.db-shm
 test/*.dSYM
+
+# Benchmark binaries built by "make bench" (source test/bench.c is tracked)
+bench_kv
+bench_sql

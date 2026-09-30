@@ -104,3 +104,23 @@ test: $(TESTBINS)
 	cd test && ../test/t_smoke && ../test/t_kv && ../test/t_big && ../test/t_wal && ../test/t_api && ../test/t_proc && ../test/t_dur && ../test/t_trees
 
 .PHONY: test
+
+# ----------------------------------------------------------------------
+# Benchmark: KV (btreelite) vs SQL (system libsqlite3) on the same load.
+# The two engines are built from the one test/bench.c source.
+# ----------------------------------------------------------------------
+SQLINC  = /opt/homebrew/opt/sqlite/include
+SQLLIB  = -L/opt/homebrew/opt/sqlite/lib -lsqlite3
+
+# btreelite (KV) side.
+bench_kv: test/bench.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+
+# SQL side: same workload through prepared statements + libsqlite3.
+bench_sql: test/bench.c
+	$(CC) $(CFLAGS) -DBENCH_SQL -I$(SQLINC) -o $@ $< $(SQLLIB)
+
+bench: bench_kv bench_sql
+	./bench_sql $(BENCHARG) ; ./bench_kv $(BENCHARG)
+
+.PHONY: bench
