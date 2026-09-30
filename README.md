@@ -1,4 +1,4 @@
-# litebtree
+# btreelite
 
 A standalone key-value storage engine extracted from SQLite's storage
 subsystem — the B-tree layer, the pager, and WAL — with the SQL layer
@@ -22,17 +22,20 @@ removed entirely.
   locking, inherited from SQLite.
 - **File format**: same page/cell layout as SQLite, with a different magic
   string so `sqlite3` CLI tools do not mistake it for a SQL database.
-- **Build artifact**: `liblitebtree.a` / `liblitebtree.so` (no third-party
-  dependencies). Public API functions are prefixed `litebtree_`.
+- **Build artifact**: `libbtreelite.a` (no third-party
+  dependencies). Public API functions are prefixed `btreelite_`.
 
-The design and extraction plan is documented in
-[docs/kv-extraction-plan.md](docs/kv-extraction-plan.md).
+The design and phased extraction plan is documented in
+[docs/phase.md](docs/phase.md).
 
 ## Status
 
-Implementation in progress. Phase 0 (build skeleton with SQL-free
-compilation), Phase 1 (decoupling the btree/pager/journal stack from the
-SQL layer) and Phase 2 (KV cell format plus the public API) are done; see
+Phase 0 (build skeleton with SQL-free compilation), Phase 1 (decoupling the
+btree/pager/journal stack from the SQL layer), Phase 2 (KV cell format plus
+the public API), Phase 3 (WAL seam: mode transitions, checkpointing,
+autocheckpoint, busy timeout) and Phase 4 (the last declared APIs:
+savepoints, incremental blob write, integrity check, memory accounting) are
+complete; see
 [docs/phase.md](docs/phase.md) for the plan and
 [docs/phase0-report.md](docs/phase0-report.md),
 [docs/phase1-report.md](docs/phase1-report.md),
@@ -43,8 +46,8 @@ The KV cell format was subsequently redesigned to use the table-btree
 record format, so keys are always held locally and lookups never touch
 overflow pages.  See
 [docs/kv-format-redesign.md](docs/kv-format-redesign.md).  With that in
-place `make test` passes in full (`t_smoke`, `t_kv`, `t_big`), including
-values larger than one page.
+place `make test` passes in full across six suites (`t_smoke`, `t_kv`,
+`t_big`, `t_wal`, `t_api`, `t_proc`).
 
 ## Journal modes
 
@@ -127,6 +130,17 @@ anyway.
       removed both forms open a true memory database (journal mode MEMORY,
       no files created, and the data does not survive `btreelite_close()`)
       as the header documents.
+- [x] **Phase 4 concurrency acceptance** — done.  `test/t_proc.c` runs
+      *separate processes* (fork + execl, since POSIX record locks cannot be
+      exercised by a plain fork): a second process holding a write
+      transaction excludes the first (`SQLITE_BUSY` with a zero timeout); a
+      WAL writer commits while a parent reader keeps its snapshot
+      (reader/writer concurrency), with the new rows visible to a fresh
+      reader afterwards; and `btreelite_busy_timeout()` makes a blocked
+      writer wait out the peer's hold instead of failing instantly — the
+      parent got the lock, wrote and committed after the child released it.
+- [x] **`sqlite3BtreeIntegerKey()` dead function** — removed.  It had no
+      callers: the KV accessors (`sqlite3BtreeKvKey` et al.) superseded it.
 
 - [x] **Large values spanning overflow pages (varint encoding)** — fixed.
       The overflow path itself was correct; the defect was in

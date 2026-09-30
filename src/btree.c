@@ -4641,20 +4641,6 @@ int sqlite3BtreeCursorIsValidNN(BtCursor *pCur){
 }
 
 /*
-** Return the value of the integer key or "rowid" for a table btree.
-** This routine is only valid for a cursor that is pointing into a
-** ordinary table btree.  If the cursor points to an index btree or
-** is invalid, the result of this routine is undefined.
-*/
-i64 sqlite3BtreeIntegerKey(BtCursor *pCur){
-  assert( cursorHoldsMutex(pCur) );
-  assert( pCur->eState==CURSOR_VALID );
-  assert( pCur->curIntKey );
-  getCellInfo(pCur);
-  return pCur->info.nKey;
-}
-
-/*
 ** Pin or unpin a cursor.
 */
 void sqlite3BtreeCursorPin(BtCursor *pCur){

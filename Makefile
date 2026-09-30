@@ -96,11 +96,11 @@ clean:
 # ----------------------------------------------------------------------
 # Tests
 # ----------------------------------------------------------------------
-TESTBINS = test/t_smoke test/t_kv test/t_big test/t_wal test/t_api
+TESTBINS = test/t_smoke test/t_kv test/t_big test/t_wal test/t_api test/t_proc
 $(TESTBINS): test/%: test/%.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB)
 
 test: $(TESTBINS)
-	cd test && ../test/t_smoke && ../test/t_kv && ../test/t_big && ../test/t_wal && ../test/t_api
+	cd test && ../test/t_smoke && ../test/t_kv && ../test/t_big && ../test/t_wal && ../test/t_api && ../test/t_proc
 
 .PHONY: test
