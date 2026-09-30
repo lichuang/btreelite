@@ -137,27 +137,68 @@ unsigned btreelite_page_count(btreelite_db *p){
 /* ---------------------------------------------------------------- */
 
 int btreelite_begin(btreelite_db *p, int wrflag){
+  int rc;
   if( p==0 ) return BTREELITE_ERROR;
   if( wrflag<0 || wrflag>2 ) return BTREELITE_ERROR;
-  return sqlite3BtreeBeginTrans(p->pBt, wrflag, 0);
+  rc = sqlite3BtreeBeginTrans(p->pBt, wrflag, 0);
+  if( rc==SQLITE_OK && wrflag && sqlite3BtreeTxnState(p->pBt)==SQLITE_TXN_WRITE ){
+    /* A nested write-begin opens one more savepoint. */
+    p->env.nSavepoint++;
+  }
+  return rc;
 }
 int btreelite_commit(btreelite_db *p){
   int rc;
   if( p==0 ) return BTREELITE_ERROR;
   rc = sqlite3BtreeCommit(p->pBt);
-  if( rc==SQLITE_OK ) btreeliteWalCallback(p);
+  if( rc==SQLITE_OK ){ p->env.nSavepoint = 0; btreeliteWalCallback(p); }
   return rc;
 }
 int btreelite_rollback(btreelite_db *p){
   int rc;
   if( p==0 ) return BTREELITE_ERROR;
   rc = sqlite3BtreeRollback(p->pBt, SQLITE_OK, 0);
-  if( rc==SQLITE_OK ) btreeliteWalCallback(p);
+  if( rc==SQLITE_OK ){ p->env.nSavepoint = 0; btreeliteWalCallback(p); }
   return rc;
 }
 int btreelite_txn_state(btreelite_db *p){
   if( p==0 ) return 0;
   return sqlite3BtreeTxnState(p->pBt);
+}
+
+int btreelite_savepoint(btreelite_db *p, int op, int iSavepoint){
+  int iBt, rc;
+  if( p==0 ) return BTREELITE_ERROR;
+  if( op!=BTREELITE_SAVEPOINT_RELEASE && op!=BTREELITE_SAVEPOINT_ROLLBACK ){
+    return BTREELITE_ERROR;
+  }
+  if( sqlite3BtreeTxnState(p->pBt)!=SQLITE_TXN_WRITE ){
+    return BTREELITE_ERROR;
+  }
+  /* iSavepoint counts from 0 for the outermost savepoint, matching the
+  ** SQL SAVEPOINT numbering; sqlite3BtreeSavepoint wants the distance
+  ** from the innermost one. */
+  if( iSavepoint<0 || iSavepoint>=p->env.nSavepoint ){
+    return BTREELITE_ERROR;
+  }
+  /* The outermost savepoint *is* the write transaction (the first nested
+  ** btreelite_begin() began it), so releasing it commits. */
+  if( op==BTREELITE_SAVEPOINT_RELEASE && iSavepoint==0 ){
+    return btreelite_commit(p);
+  }
+  iBt = p->env.nSavepoint - iSavepoint - 1;
+  if( iBt<0 ) return BTREELITE_ERROR;
+  rc = sqlite3BtreeSavepoint(p->pBt,
+                op==BTREELITE_SAVEPOINT_ROLLBACK ? SAVEPOINT_ROLLBACK
+                                                 : SAVEPOINT_RELEASE, iBt);
+  if( rc==SQLITE_OK ){
+    /* Either operation destroys the target and everything nested inside
+    ** it, leaving iSavepoint savepoints (a ROLLBACK re-opens the target
+    ** so further statements still unwind to it). */
+    p->env.nSavepoint = op==BTREELITE_SAVEPOINT_RELEASE ? iSavepoint
+                                                       : iSavepoint+1;
+  }
+  return rc;
 }
 
 /* ---------------------------------------------------------------- */
@@ -431,4 +472,85 @@ const void *btreelite_value_fetch(btreelite_cur *c, int *pAmt){
   p = sqlite3BtreeKvValueFetch(c->pCur, &nAmt);
   if( pAmt ) *pAmt = (int)nAmt;
   return p;
+}
+/*
+** Overwrite a range of the value the cursor points at, in place.
+**
+** The range must already lie inside the stored value: an incremental write
+** cannot grow the value.  The (k,nK) argument repositions the cursor on the
+** named entry, since the underlying incremental-blob cursor must sit on the
+** row being written when sqlite3BtreePutData runs.
+*/
+int btreelite_value_write(btreelite_cur *c, const void *k, int nK,
+                          uint32_t offset, uint32_t amt, const void *z){
+  uint32_t nVal = 0;
+  int rc, res = 0;
+  if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
+  if( z==0 && amt>0 ) return BTREELITE_ERROR;
+  rc = kvMoveto(c, k, nK, &res);
+  if( rc!=SQLITE_OK ) return rc;
+  if( res!=0 || sqlite3BtreeEof(c->pCur) ) return BTREELITE_NOTFOUND;
+  rc = btreelite_value_size(c, &nVal);
+  if( rc!=BTREELITE_OK ) return rc;
+  if( (u64)offset+(u64)amt>(u64)nVal ){
+    /* Incremental write cannot grow the value. */
+    return BTREELITE_ERROR;
+  }
+  sqlite3BtreeIncrblobCursor(c->pCur);
+  return sqlite3BtreePutData(c->pCur, offset, amt, (void*)z);
+}
+/*
+** Run the btree integrity checker over the tree rooted at iRoot, or over
+** page 1 plus the freelist when iRoot is 0 (btreelite has no catalog of
+** tree roots, so "the whole file" degenerates to a freelist-and-page-1
+** check).  A read transaction is opened for the duration.  *pzOut must be
+** freed with btreelite_free().
+*/
+int btreelite_integrity_check(btreelite_db *p, unsigned iRoot, int mxErr,
+                              int *pnErr, char **pzOut){
+  Pgno aRoot[3];
+  int nRoot;
+  /* Counts are written via sqlite3MemSetArrayInt64, which is a no-op in
+  ** btreelite, so the memory cells only need to be addressable storage. */
+  char aCnt[3*128];
+  int rc;
+
+  if( p==0 || pnErr==0 || pzOut==0 ) return BTREELITE_ERROR;
+  *pnErr = 0;
+  *pzOut = 0;
+  if( mxErr<1 ) mxErr = 1;
+  nRoot = 0;
+  if( iRoot==0 ){
+    /* No catalog of tree roots exists, so "whole file" degenerates to a
+    ** freelist-and-page-1 check: aRoot[0]==0 marks the partial form. */
+    aRoot[nRoot++] = 0;
+    aRoot[nRoot] = 1;
+    nRoot++;
+  }else if( iRoot!=1 ){
+    /* Page 1 hosts the (always empty) schema tree in a KV file; including
+    ** it keeps the checker's page-usage sweep from reporting it unused. */
+    aRoot[nRoot++] = 0;
+    aRoot[nRoot++] = 1;
+    aRoot[nRoot++] = (Pgno)iRoot;
+  }else{
+    aRoot[nRoot++] = (Pgno)iRoot;
+  }
+  rc = btreelite_begin(p, 0);
+  if( rc!=BTREELITE_OK ) return rc;
+  memset(aCnt, 0, sizeof(aCnt));
+  rc = (int)sqlite3BtreeIntegrityCheck(&p->env, p->pBt, aRoot, (Mem*)aCnt,
+                      nRoot, mxErr, pnErr, pzOut);
+  if( rc!=SQLITE_OK && *pzOut ){ btreelite_free(*pzOut); *pzOut = 0; }
+  btreelite_commit(p);
+  return rc;
+}
+
+/*
+** Bytes of heap currently acquired by the allocator (malloc.c keeps the
+** running total in SQLITE_STATUS_MEMORY_USED), which includes the pager
+** and page-cache for this connection in the single-connection case.
+*/
+int btreelite_mem_used(btreelite_db *p){
+  if( p==0 ) return BTREELITE_ERROR;
+  return (int)sqlite3StatusValue(SQLITE_STATUS_MEMORY_USED);
 }

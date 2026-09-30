@@ -10188,8 +10188,10 @@ static int checkTreePage(
       continue;
     }
 
-    /* Check for integer primary key out of range */
-    if( pPage->intKey ){
+    /* Check for integer primary key out of range.  A KV tree stores a
+    ** byte-string key, and CellInfo.nKey holds its length, so the rowid
+    ** ordering check below does not apply. */
+    if( pPage->intKey && (pCheck->pBt->btsFlags & BTS_KV)==0 ){
       if( keyCanBeEqual ? (info.nKey > maxKey) : (info.nKey >= maxKey) ){
         checkAppendMsg(pCheck, "Rowid %lld out of order", info.nKey);
       }

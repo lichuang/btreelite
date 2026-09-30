@@ -58,9 +58,6 @@ typedef sqlite3_uint64 sqlite_uint64;
 #if defined(SQLITE_OMIT_WAL)
 # undef SQLITE_OMIT_WAL
 #endif
-#define SQLITE_OMIT_INTEGRITY_CHECK  0
-#define SQLITE_OMIT_INCRBLOB         0
-#define SQLITE_OMIT_MEMORYDB         0
 #define SQLITE_OMIT_DATETIME_FUNCS   1
 #define SQLITE_OMIT_TRACE            1
 #define SQLITE_OMIT_GET_TABLE        1
