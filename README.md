@@ -12,7 +12,17 @@ removed entirely.
 - **Model**: plain key-value semantics. Keys are byte strings ordered by
   binary comparison (memcmp). Values are arbitrary byte strings.
 - **Multiple trees**: one database file can contain many B-trees, each
-  identified by its root page number.
+  identified by its root page number.  There is no catalog of tree roots:
+  `btreelite_create_tree()` hands back the root page and the application is
+  responsible for persisting it wherever it tracks its keys; a root page
+  number is the handle for every later `cursor_open`/`clear_tree`.  Page 1
+  hosts the file-format header (its first 100 bytes) and doubles as the
+  always-empty internal tree root of the format; keep it reserved.
+- **In-memory databases**: `btreelite_open(NULL)` (or `":memory:"`) opens a
+  heap-resident database that vanishes at `btreelite_close()` — commits are
+  real transactions but nothing survives the close, and it runs in the
+  MEMORY journal mode because a WAL needs a file.  Handy as scratch space
+  or for tests.
 - **ACID transactions**: inherited from SQLite's write-ahead log.  WAL is
   the default (and durable `synchronous=FULL`, matching SQLite's default);
   `btreelite_journal_mode()` exposes only WAL and MEMORY, and an in-memory
@@ -45,7 +55,8 @@ The KV cell format was subsequently redesigned to use the table-btree
 (leaf-data) page family with a byte-string key instead of the index-btree
 record format, so keys are always held locally and lookups never touch
 overflow pages.  See
-[docs/kv-format-redesign.md](docs/kv-format-redesign.md).  With that in
+[docs/kv-format-design.md](docs/kv-format-design.md) (Chinese original:
+[docs/kv-format-design-cn.md](docs/kv-format-design-cn.md)).  With that in
 place `make test` passes in full across eight suites (`t_smoke`, `t_kv`,
 `t_big`, `t_wal`, `t_api`, `t_proc`, `t_dur`, `t_trees`).
 

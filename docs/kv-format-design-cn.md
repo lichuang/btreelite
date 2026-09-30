@@ -35,7 +35,8 @@
 `decodeFlags` 在 `BTS_KV` 下为 KV 页设置：
 
 ```c
-intKey     = 0;      /* 关键：仍按 "无整数键" 处理，使游标走 pKeyInfo!=0 分支 */
+intKey     = 1;      /* 关键：复用 "整数键表" 游标分支 (pKeyInfo==0)，
+                        key 类型差异只在 cell 头部编码 */
 intKeyLeaf = 1;      /* 关键：balance 取 leafData=1，用 key-only divider */
 xCellSize  = kvCellSizeLeaf / kvCellSizeInterior;
 xParseCell = kvParseCellLeaf / kvParseCellInterior;
@@ -43,10 +44,13 @@ maxLocal   = pBt->maxLeaf;
 minLocal   = pBt->minLeaf;
 ```
 
-- `intKey=0` 让 `moveToRoot` 的一致性检查 `(pKeyInfo==0)!=pRoot->intKey` 通过
-  （KV 游标 `pKeyInfo!=0`），并让 `sqlite3BtreeInsert` 走 index 分支。
+- `intKey=1` 让 `moveToRoot` 的一致性检查 `(pKeyInfo==0)!=pRoot->intKey` 通过
+  （KV 游标 `pKeyInfo==0`，与 intkey 表游标同型），并让 `sqlite3BtreeInsert`
+  走"无 KeyInfo"分支；字节串 key 的差异只在 cell 头部（`nKeyLen`+key 代替
+  varint i64）。
 - `intKeyLeaf=1` 让 `balance_nonroot` 取 `leafData=1`，divider 构造走
-  "只有一个 key"的分支（btree.c:8459, 8882-8890）。
+  "只有一个 key"的分支；同时 KV 页跳过 `balance_quick` 快路（其 divider
+  提取逻辑是 intkey 专用的，见 §4.7）。
 
 ## 3. Cell 布局
 
@@ -100,7 +104,7 @@ kvCellSizeLeaf / kvCellSizeInterior
 ### 4.2 decodeFlags（btree.c:2028）
 
 在 `BTS_KV` 时，`0x0d`→KV leaf、`0x05`→KV interior；index 家族（0x0a/0x02）
-返回 CORRUPT。非 KV 模式保持原样（intkey 仍可用，用于 t_smoke）。
+返回 CORRUPT。非 KV 模式保持原样（intkey 能力保留在源码中，但 btreelite 不暴露）。
 
 ### 4.3 fillInCell（btree.c:7074）
 
@@ -119,21 +123,24 @@ memcpy key
 
 照抄 `sqlite3BtreeTableMoveto` 的结构，但比较用字节串：
 ```
-二分: pCell = findCellPastPtr(pPage, idx)
-      kvKeyCompare(pPage, pCell, pKey, nKey)   /* 只读 key，零物化 */
+二分: kvKeyCompareCell(pPage, idx, pKey, nKey)   /* 只读 key，零物化 */
 ```
-`kvKeyCompare` 解析 cell 的 key（divider：跳过 4B child；leaf：跳过两个
-varint），memcmp + 长度决胜。**key 恒本地，永不触发 overflow / malloc。**
+`kvKeyCompareCell` 从**完整 cell 起点** `findCell(pPage,idx)` 解析 key
+（leaf 跳两个 varint；divider 由 `kvParseCellInterior` 内部跳过 4B child），
+memcmp + 长度决胜。**key 恒本地，永不触发 overflow / malloc。**
+（注意：早先版本用 `findCellPastPtr` 会与 `kvParseCellInterior` 的 4B child
+跳过重复，导致内部页比较错位——已修正为 `findCell`。）
 
 `btreeMoveto()` 在 KV 游标时分派到此函数。
 
-### 4.5 sqlite3BtreeInsert（btree.c:9419）
+### 4.5 sqlite3BtreeInsert（btree.c）
 
-- index 分支里，若游标为 KV：
-  - loc==0 的重定位用 `sqlite3BtreeKvMoveto`（替代 btreeMoveto/IndexMoveto）；
-  - **跳过** `btreeOverwriteCell` 的"same key overwrite"优化（其语义是
-    index 记录覆盖，对 KV 的 value 不适用）；改用 drop+insert。
-- `assert( pPage->intKey || pX->nKey>=0 )` 成立（intKey=0）。
+- 游标为 KV 时（`pKeyInfo==0` 分支内再判 `BTS_KV`）：
+  - `loc==0` 的重定位用 `sqlite3BtreeKvMoveto`（替代 btreeMoveto/IndexMoveto）；
+  - **保留** `btreeOverwriteCell` 原地覆写优化，但判据同时要求 **key 字节相同
+    且 value 尺寸相同**（`info.nKeyLen==pX->nKey && memcmp(...)==0` 且
+    `info.nPayload==pX->nData+pX->nZero`）；不满足则 drop+insert。
+- 断言为 `assert( pPage->intKey || pX->nKey>=0 )`（KV 下 `intKey==1`，恒真）。
 
 ### 4.6 balance_nonroot（btree.c:8847-8900）
 
@@ -169,11 +176,19 @@ memcpy(&pCell[4+varintLen], info.pKey, info.nKeyLen);
 判定：`pBt->btsFlags & BTS_KV` → 用 `getCellInfo` 拿 `info.pKey`/`nKeyLen`，
 malloc+copy key，`nKey=len`。
 
-### 4.9 sqlite3BtreeDelete（btree.c:9841）内部节点删除
+### 4.9 sqlite3BtreeDelete（btree.c）内部节点删除
 
-删除内部 cell 时，原生把"前驱子树最大 cell"整体上移替换 divider。KV 下
-leaf cell 含 value，需重写为 divider 形式（剥掉 value，只留 nKeyLen+key）。
-在 `!pPage->leaf` 分支按 KV 改写构造。
+删除内部页上的条目时，原生代码把"前驱子树最大 cell"整体上移替换
+divider；若该 cell 来自叶子、携带 value，才需要改写为 divider 形式
+（剥掉 value，只留 nKeyLen+key）。
+
+**该分支对 KV 树不可达，因此无需任何 KV 专用改写。** `KvMoveto` 恒下降到
+叶子：在内部页命中 key 时执行 `lwr=idx; goto kv_moveto_next_layer` 强制进入
+下一层，而非停在内部页（见 §4.4）。所以 KV 游标永远停在叶条目上，
+`sqlite3BtreeDelete` 不会进入 `!pPage->leaf` 分支；该内部节点路径只由
+legacy intkey 表树使用，保持原样。
+（实测确认：对 2000 键树删 1/3、对 6000 键树删 1/2，删除顺序专门制造大量
+merge，均未进入该分支，`integrity_check` 全程干净。）
 
 ### 4.10 sqlite3BtreeTableMoveto 相关
 
@@ -192,18 +207,18 @@ KV 不用 `TableMoveto`；`btreeMoveto` 的 `pKey==0` 分支仅 intkey 用。保
 - `btreelite_put`：直接 `BtreePayload{ pKey=k, nKey=nK, pData=v, nData=nV }`，
   **不做拼接编码**（cell 头由 fillInCell 写）。定位用 KvMoveto。
 - `btreelite_get/seek/del`：用 KvMoveto（原始 res 语义）。
-- 读取：`btreelite_key` 从 `info.pKey/nKeyLen` 直接 `sqlite3BtreePayload` 读
-  key 段；`btreelite_value_read` 从 `nKey` 之后读 value（偏移 =
-  headerSize + nKeyLen；用 `sqlite3BtreePayload` 的绝对 offset）。
-  **需要 KvParse 暴露给游标的 key/value 偏移** → 存于 BtCursor：
-  `u32 kvKeyOff; u16 kvKeyLen; u32 kvValOff;`。
+- 读取：`btreelite_key` 经 `sqlite3BtreeKvKey()` 拿到 `info.pKey`/`nKeyLen`
+  （key 恒本地）；`btreelite_value_size/read/fetch` 分别经
+  `sqlite3BtreeKvValueSize/Read/Fetch` 读取 value，跨 overflow 页透明。
+  （不需要在 BtCursor 里存 key/value 偏移：KV 访问器内部用 `getCellInfo`
+  得到的 `pKey`/`pPayload` 定位。）
 - `KV_MAX_KEY` = 255；超限 put 返回错误。
 
 ## 6. 验证
 
 - `t_big`（200KB value）→ 全绿（本设计的核心目标）。
-- `t_kv`（1529 checks）与 `t_smoke`（20 checks）不回归。
-- `t_smoke` 仍用 intkey 树（非 KV 模式），验证"非 KV 路径未被破坏"。
+- `t_kv` 与 `t_smoke` 不回归。二者均已改用公开 KV API 建树/读写，
+  不再走 intkey 路径。
 
 ## 7. 兼容性
 
