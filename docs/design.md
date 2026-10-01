@@ -65,13 +65,21 @@ anyway.
 
 The README carries the measured KV-vs-SQL numbers.  How to read them:
 
-- **Lookups are the story.**  5.6–6.0x: a KV search is a `memcmp` against a
+- **Lookups are the story.**  5.5–5.8x: a KV search is a `memcmp` against a
   byte-string key held locally on the page — no record encoding, no
   VDBE-style dispatch.  This is the return on the KV cell format.
-- **Overwrites and deletes run 1.3–1.5x faster**, for the same reason:
+- **Overwrites and deletes run 1.30–1.48x faster**, for the same reason:
   no record decode on the way to the payload.
-- **Sequential inserts are the one exception** (about 1.25x slower): the
-  SQL side inserts via rowid append (`BTREE_APPEND`), which lands each new
-  row at the end of the tree in O(1); the KV side bisects for every key.
-  Appending-like traffic (monotone keys) is where the KV insert path would
-  benefit from an explicit fast path, if it ever matters.
+- **Inserts are on par, not behind.**  `btreelite_put` hands the btree the
+  `BTREE_APPEND` search hint, which is what SQLite's own `OPFLAG_APPEND`
+  does for auto-generated rowids: the locate is biased toward the highest
+  cell, so monotone key traffic -- the common KV case -- lands on the
+  append fast path.  The hint is safe for keys in any order (it only
+  changes the first probe of the binary search, and the insertion logic is
+  symmetric in the returned seek result); measured throughput for sorted,
+  descending and random key orders with the hint on: ascending +29%,
+  descending and random within noise of the unhinted baseline.
+  `put` keeps a final reposition afterwards, because "cursor at the stored
+  entry" is what the value accessors (`value_size` / `value_read` /
+  `value_fetch`) are built on and `sqlite3BtreeInsert` leaves the cursor in
+  an arbitrary state once a balance has run.

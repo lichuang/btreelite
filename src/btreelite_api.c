@@ -250,18 +250,20 @@ int btreelite_put(btreelite_cur *c, const void *k, int nK,
   rc = kvCheckKey(k, nK);
   if( rc!=BTREELITE_OK ) return rc;
   if( nV<0 || (nV>0 && v==0) ) return BTREELITE_ERROR;
-  /* Locate the insertion point; the returned value is the seekResult
-  ** sqlite3BtreeInsert expects. */
-  rc = kvMoveto(c, k, nK, &loc);
-  if( rc!=SQLITE_OK ) return rc;
   memset(&x, 0, sizeof(x));
   x.pKey = k;
   x.nKey = nK;
   x.pData = v;
   x.nData = nV;
-  rc = sqlite3BtreeInsert(c->pCur, &x, 0, loc);
+  /* Let sqlite3BtreeInsert locate the insertion point itself: the
+  ** BTREE_APPEND hint biases its search toward the highest cell, which is
+  ** a pure hint (safe for keys in any order) and puts monotone key traffic
+  ** -- the common KV case -- on the append fast path. */
+  rc = sqlite3BtreeInsert(c->pCur, &x, BTREE_APPEND, 0);
   if( rc!=SQLITE_OK ) return rc;
-  /* Reposition on the stored entry. */
+  /* Reposition on the stored entry: sqlite3BtreeInsert leaves the cursor
+  ** in an arbitrary state after a balance, and "cursor at the stored
+  ** entry" is the contract the value accessors rely on. */
   rc = kvMoveto(c, k, nK, &loc);
   return rc;
 }
