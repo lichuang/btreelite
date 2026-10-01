@@ -39,6 +39,9 @@ held locally and lookups never touch overflow pages.  It is specified in
 [KV 存储格式设计](docs/kv-format-design-cn.md)); the journal-mode design and
 its durability trade-offs are in [design notes](docs/design.md).
 
+Runnable programs showing the API live in [`examples/`](examples/) — build them
+with `make examples`.
+
 ## Benchmark: btreelite (KV) vs SQLite (SQL)
 
 `make bench` measures KV throughput against SQL on the same workload,

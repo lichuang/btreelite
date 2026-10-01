@@ -106,6 +106,17 @@ test: $(TESTBINS)
 .PHONY: test
 
 # ----------------------------------------------------------------------
+# Examples: small programs demonstrating the public API (see examples/).
+# ----------------------------------------------------------------------
+EXAMPLES = examples/kv_demo examples/txn_demo examples/tree_demo
+$(EXAMPLES): examples/%: examples/%.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+
+examples: $(EXAMPLES)
+
+.PHONY: examples
+
+# ----------------------------------------------------------------------
 # Benchmark: KV (btreelite) vs SQL (system libsqlite3) on the same load.
 # The two engines are built from the one test/bench.c source.
 # ----------------------------------------------------------------------
