@@ -54,7 +54,7 @@ intKey     = 1;      /* Reuse the "integer-key table" cursor branch
 intKeyLeaf = 1;      /* balance() sees leafData=1 and builds key-only dividers. */
 xCellSize  = kvCellSizeLeaf / kvCellSizeInterior;
 xParseCell = kvParseCellLeaf / kvParseCellInterior;
-maxLocal   = pBt->maxLeaf;
+maxLocal   = pBt->maxLeaf - KV_CELL_HDR_OVERAGE;   /* leaf pages, see §3 */
 minLocal   = pBt->minLeaf;
 ```
 
@@ -83,8 +83,19 @@ KV interior (divider) cell:
 - `nValue` is the value length (may be 0); `nKeyLen` <= `KV_MAX_KEY`
   (255 by default).
 - Overflow splitting applies **only to the value**: the `nPayload`
-  (local + overflow) notion inside KV means `nValue`, and
-  `minLocal`/`maxLocal` are `minLeaf`/`maxLeaf`.
+  (local + overflow) notion inside KV means `nValue`, and `minLocal` is
+  `minLeaf`.
+- **The leaf `maxLocal` is not the native `maxLeaf`**: the native budget
+  `maxLeaf = usableSize-35` only accounts for a 14-byte rowid cell header
+  (payload varint + rowid varint), while a KV cell header can be up to
+  262 bytes (2 varints + a 255-byte key).  Used as-is, a maximal cell
+  (header + local value + 4-byte overflow pointer) could exceed what an
+  empty page holds, leaving `balance_nonroot` no page to place it on and
+  producing a spurious `SQLITE_CORRUPT` for long keys with boundary-size
+  values (regression coverage in t_big).  The leaf `maxLocal` is therefore
+  reduced by `KV_CELL_HDR_OVERAGE = KV_CELL_MAX_HDR(262) - 14 = 248` bytes,
+  preserving the "a maximal cell always fits on an empty page" invariant
+  that balance relies on.
 - The overflow loop in `fillInCell` is therefore reused verbatim; only the
   bytes being spilled are the value.
 

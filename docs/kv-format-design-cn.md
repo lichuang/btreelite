@@ -42,7 +42,7 @@ intKey     = 1;      /* 关键：复用 "整数键表" 游标分支 (pKeyInfo==0
 intKeyLeaf = 1;      /* 关键：balance 取 leafData=1，用 key-only divider */
 xCellSize  = kvCellSizeLeaf / kvCellSizeInterior;
 xParseCell = kvParseCellLeaf / kvParseCellInterior;
-maxLocal   = pBt->maxLeaf;
+maxLocal   = pBt->maxLeaf - KV_CELL_HDR_OVERAGE;   /* 仅叶页，见 §3 */
 minLocal   = pBt->minLeaf;
 ```
 
@@ -68,7 +68,15 @@ KV 内部（divider）cell:
 
 - `nValue` = value 长度（可为 0）；`nKeyLen` ≤ `KV_MAX_KEY`（默认 255）。
 - overflow 切分**只针对 value**：`nPayload`（本地+溢出）语义在 KV 中即
-  `nValue`，`minLocal/maxLocal` 用 `minLeaf/maxLeaf`。
+  `nValue`，`minLocal` 用 `minLeaf`。
+- **叶页的 `maxLocal` 不是原生 `maxLeaf`**：原生 `maxLeaf = usableSize-35`
+  的预算只够 14 字节的 rowid cell 头（varint payload + varint rowid），而
+  KV cell 头最坏为 262 字节（2 个 varint + 255 字节 key）。若直接使用
+  `maxLeaf`，最坏 cell（header + 本地 value + 4B 溢出指针）会超过空页容量，
+  `balance_nonroot` 无页可放而报 `SQLITE_CORRUPT`（长 key + 临界 value 曾
+  触发此缺陷，见 t_big 回归）。因此叶页 `maxLocal` 缩减
+  `KV_CELL_HDR_OVERAGE = KV_CELL_MAX_HDR(262) - 14 = 248` 字节，保持
+  "最大 cell 必能放进空页"这一 balance 不变量。
 - 因此 `fillInCell` 的溢出循环完全复用原生逻辑，只是溢出的是 value 段。
 
 ### CellInfo 扩展

@@ -1788,7 +1788,11 @@ static int decodeFlags(MemPage *pPage, int flagByte){
     pPage->intKeyLeaf = 1;
     pPage->xCellSize = kvCellSizeLeaf;
     pPage->xParseCell = kvParseCellLeaf;
-    pPage->maxLocal = pBt->maxLeaf;
+    /* The KV cell header carries the key bytes on top of the value, which
+    ** the upstream maxLeaf budget does not account for.  Shrink maxLocal
+    ** by the worst-case header overage so a maximal cell always fits on
+    ** an empty page (see KV_CELL_MAX_HDR in btreeInt.h). */
+    pPage->maxLocal = pBt->maxLeaf - KV_CELL_HDR_OVERAGE;
     pPage->minLocal = pBt->minLeaf;
   }else if( flagByte==(PTF_LEAFDATA | PTF_INTKEY) ){
     /* KV interior: [4-byte child][varint nKeyLen][key bytes]. */

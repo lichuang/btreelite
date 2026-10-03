@@ -474,6 +474,19 @@ struct BtShared {
 #define BTS_KV               0x0100   /* btreelite: cells hold KV records */
 
 /*
+** Worst-case size of a KV leaf cell header: varint32 value-length (up to
+** 5 bytes) + varint32 key-length (up to 2 bytes) + the maximum key size
+** (BTREELITE_MAX_KEY, 255 bytes).  The upstream maxLeaf budget assumes a
+** rowid cell header of at most 14 bytes (5-byte payload varint + 9-byte
+** rowid varint).  KV leaf pages shrink their spill threshold by the
+** difference so that a maximal cell (header + local value + 4-byte
+** overflow pointer) still fits on an otherwise empty page, preserving the
+** invariant balance_nonroot() relies on.
+*/
+#define KV_CELL_MAX_HDR        (5+2+255)
+#define KV_CELL_HDR_OVERAGE    (KV_CELL_MAX_HDR - 14)
+
+/*
 ** An instance of the following structure is used to hold information
 ** about a cell.  The parseCellPtr() function fills in this structure
 ** based on information extract from the raw disk page.
