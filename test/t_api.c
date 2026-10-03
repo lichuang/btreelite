@@ -111,10 +111,15 @@ int main(void){
   CHECK( rc==BTREELITE_OK );
   rc = writeEntries(cur, 0, 9);
   CHECK( rc==BTREELITE_OK );
+  rc = btreelite_commit(db);
+  CHECK( rc==BTREELITE_OK );   /* 10 committed baseline rows: 0..9 */
 
-  /* 1. Savepoints: nested write-begin acts as a savepoint. */
+  /* 1. Savepoints: nested write-begin acts as a savepoint, with SQL
+  ** semantics: ROLLBACK TO i undoes everything written after savepoint i
+  ** was established (and keeps i open); RELEASE i merges it and destroys
+  ** everything nested inside it. */
   {
-    /* Savepoint 0 = outermost (already begun), then two more. */
+    /* Savepoint 0 = the write transaction itself, then two more. */
     rc = btreelite_begin(db, 1);
     CHECK( rc==BTREELITE_OK );
     rc = writeEntries(cur, 10, 14);
@@ -139,41 +144,87 @@ int main(void){
     CHECK( rc==BTREELITE_OK );
     CHECK( n==25 );
 
-    /* ROLLBACK TO the middle savepoint: rows 20..24 unwind; rows 15..19
-    ** stay and the inner savepoint (2) is destroyed. */
-    rc = btreelite_savepoint(db, BTREELITE_SAVEPOINT_ROLLBACK, 1);
+    /* ROLLBACK TO savepoint 2 undoes only what was written after it was
+    ** established: rows 20..24 unwind, rows 15..19 stay, and savepoint 2
+    ** remains open (re-established) for further use. */
+    rc = btreelite_savepoint(db, BTREELITE_SAVEPOINT_ROLLBACK, 2);
     CHECK( rc==BTREELITE_OK );
     rc = countInTxn(cur, &n);
     CHECK( n==20 );
 
-    /* After the rollback the earlier writes to 15..19 are gone (they were
-    ** part of savepoint 2's window), so rewrite them. */
-    rc = writeEntries(cur, 21, 24);
+    /* Savepoint 2 is still open: new writes land in its window. */
+    rc = writeEntries(cur, 20, 21);
     CHECK( rc==BTREELITE_OK );
     rc = countInTxn(cur, &n);
-    CHECK( n==24 );
+    CHECK( n==22 );
 
-    /* RELEASE savepoint 1 keeps rows 21..24; only the outermost (the
-    ** transaction) remains open, and the next commit lands everything. */
+    /* ROLLBACK TO savepoint 1 undoes everything after it: rows 15..21
+    ** unwind, savepoint 2 is destroyed, savepoint 1 remains open. */
+    rc = btreelite_savepoint(db, BTREELITE_SAVEPOINT_ROLLBACK, 1);
+    CHECK( rc==BTREELITE_OK );
+    rc = countInTxn(cur, &n);
+    CHECK( n==15 );
+
+    /* RELEASE savepoint 1 merges its changes and destroys it; only the
+    ** outermost savepoint (the transaction) remains. */
     rc = btreelite_savepoint(db, BTREELITE_SAVEPOINT_RELEASE, 1);
     CHECK( rc==BTREELITE_OK );
     rc = countInTxn(cur, &n);
-    CHECK( n==24 );
-
-    /* Committing the transaction must persist all rows so far:
-    ** 0..19 from savepoint 0 plus 21..24 re-written afterwards. */
-    rc = btreelite_commit(db);
-    CHECK( rc==BTREELITE_OK );
-    CHECK( btreelite_txn_state(db)==0 );
-    rc = countEntries(db, iRoot, &n);
-    CHECK( rc==BTREELITE_OK );
-    CHECK( n==24 );
+    CHECK( n==15 );
 
     /* Out-of-range and bad operations are rejected. */
     rc = btreelite_savepoint(db, BTREELITE_SAVEPOINT_RELEASE, 5);
     CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_savepoint(db, BTREELITE_SAVEPOINT_ROLLBACK, 1);
+    CHECK( rc==BTREELITE_ERROR );   /* savepoint 1 no longer exists */
     rc = btreelite_savepoint(db, 7, 0);
     CHECK( rc==BTREELITE_ERROR );
+
+    /* ROLLBACK TO savepoint 0 (the transaction) undoes everything the
+    ** transaction wrote but leaves it open: back to the committed
+    ** baseline of 10 rows. */
+    rc = writeEntries(cur, 25, 29);
+    CHECK( rc==BTREELITE_OK );
+    rc = countInTxn(cur, &n);
+    CHECK( n==20 );
+    rc = btreelite_savepoint(db, BTREELITE_SAVEPOINT_ROLLBACK, 0);
+    CHECK( rc==BTREELITE_OK );
+    rc = countInTxn(cur, &n);
+    CHECK( n==10 );
+    CHECK( btreelite_txn_state(db)==2 );   /* transaction still open */
+
+    /* The transaction can still be used and committed. */
+    rc = writeEntries(cur, 30, 31);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_savepoint(db, BTREELITE_SAVEPOINT_RELEASE, 0);
+    CHECK( rc==BTREELITE_OK );   /* RELEASE 0 commits the transaction */
+    CHECK( btreelite_txn_state(db)==0 );
+
+    /* What persists: the committed baseline 0..9 plus rows 30..31 written
+    ** after the full-transaction rollback.  Everything the transaction
+    ** wrote before that rollback (10..14, 25..29) and everything rolled
+    ** back by ROLLBACK TO 1/2 (15..24) must be gone. */
+    rc = countEntries(db, iRoot, &n);
+    CHECK( rc==BTREELITE_OK );
+    CHECK( n==12 );
+    {
+      int i;
+      char zKey[64];
+      btreelite_cur *c2 = 0;
+      rc = btreelite_begin(db, 0);
+      CHECK( rc==BTREELITE_OK );
+      rc = btreelite_cursor_open(db, iRoot, 0, &c2);
+      CHECK( rc==BTREELITE_OK );
+      for(i=0; i<=31; i++){
+        int nk = sprintf(zKey, "row-%04d", i);
+        int expect = (i<=9 || i>=30);
+        rc = btreelite_get(c2, zKey, nk);
+        CHECK( rc==(expect ? BTREELITE_OK : BTREELITE_NOTFOUND) );
+      }
+      btreelite_cursor_close(c2);
+      rc = btreelite_commit(db);
+      CHECK( rc==BTREELITE_OK );
+    }
   }
   btreelite_cursor_close(cur);
 

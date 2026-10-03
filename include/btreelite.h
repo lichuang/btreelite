@@ -125,6 +125,15 @@ int btreelite_rollback(btreelite_db *p);
 ** (BTREELITE_SAVEPOINT_ROLLBACK) the savepoint identified by iSavepoint,
 ** counting from 0 for the outermost savepoint.  Savepoints are created
 ** implicitly as nested btreelite_begin() calls within a write transaction.
+**
+** ROLLBACK TO i undoes everything written after savepoint i was
+** established and keeps i open; savepoints nested inside i are destroyed.
+** RELEASE i merges i's changes into its parent and destroys i together
+** with everything nested inside it.
+**
+** Savepoint 0 is the write transaction itself: RELEASE 0 commits the
+** transaction, and ROLLBACK TO 0 undoes everything the transaction has
+** written while leaving the transaction open.
 */
 int btreelite_savepoint(btreelite_db *p, int op, int iSavepoint);
 

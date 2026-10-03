@@ -178,25 +178,38 @@ int btreelite_savepoint(btreelite_db *p, int op, int iSavepoint){
     return BTREELITE_ERROR;
   }
   /* iSavepoint counts from 0 for the outermost savepoint, matching the
-  ** SQL SAVEPOINT numbering; sqlite3BtreeSavepoint wants the distance
-  ** from the innermost one. */
+  ** SQL SAVEPOINT numbering. */
   if( iSavepoint<0 || iSavepoint>=p->env.nSavepoint ){
     return BTREELITE_ERROR;
   }
-  /* The outermost savepoint *is* the write transaction (the first nested
-  ** btreelite_begin() began it), so releasing it commits. */
-  if( op==BTREELITE_SAVEPOINT_RELEASE && iSavepoint==0 ){
-    return btreelite_commit(p);
+  /* The outermost savepoint *is* the write transaction (the first
+  ** btreelite_begin() began it), so releasing it commits, and rolling
+  ** back to it undoes the entire transaction while leaving it open. */
+  if( iSavepoint==0 ){
+    if( op==BTREELITE_SAVEPOINT_RELEASE ){
+      return btreelite_commit(p);
+    }
+    /* sqlite3PagerSavepoint() treats index -1 as a full-transaction
+    ** playback that keeps the write transaction open. */
+    rc = sqlite3BtreeSavepoint(p->pBt, SAVEPOINT_ROLLBACK, -1);
+    if( rc==SQLITE_OK ) p->env.nSavepoint = 1;
+    return rc;
   }
-  iBt = p->env.nSavepoint - iSavepoint - 1;
-  if( iBt<0 ) return BTREELITE_ERROR;
+  /* Pager savepoints are absolute indices counted from the outermost one:
+  ** the first nested btreelite_begin() opened pager savepoint 0, the
+  ** second opened 1, and so on.  API savepoint i therefore maps to pager
+  ** savepoint i-1.  (A previous version computed the "distance from the
+  ** innermost savepoint" instead, which mirrored the numbering: rolling
+  ** back to savepoint i silently restored the state of savepoint N-i.)
+  */
+  iBt = iSavepoint - 1;
   rc = sqlite3BtreeSavepoint(p->pBt,
                 op==BTREELITE_SAVEPOINT_ROLLBACK ? SAVEPOINT_ROLLBACK
                                                  : SAVEPOINT_RELEASE, iBt);
   if( rc==SQLITE_OK ){
-    /* Either operation destroys the target and everything nested inside
-    ** it, leaving iSavepoint savepoints (a ROLLBACK re-opens the target
-    ** so further statements still unwind to it). */
+    /* A ROLLBACK re-opens the target savepoint, so i savepoints plus the
+    ** outermost transaction remain; a RELEASE destroys the target and
+    ** everything nested inside it, leaving iSavepoint savepoints. */
     p->env.nSavepoint = op==BTREELITE_SAVEPOINT_RELEASE ? iSavepoint
                                                        : iSavepoint+1;
   }

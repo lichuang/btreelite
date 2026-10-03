@@ -118,17 +118,18 @@ int main(void){
 
   /* --- Savepoints: nested writes, partial rollback ------------------ */
   check("begin", btreelite_begin(db, 1));
-  check("put(20..24)", putRange(cur, 20, 24));     /* savepoint 0 window */
+  check("put(20..24)", putRange(cur, 20, 24));     /* savepoint 0 */
 
   check("begin(nested 1)", btreelite_begin(db, 1));
-  check("put(25..29)", putRange(cur, 25, 29));     /* savepoint 1 window */
+  check("put(25..29)", putRange(cur, 25, 29));     /* savepoint 1 */
   printf("inside the transaction: %d rows visible\n", countWith(cur));
 
   check("begin(nested 2)", btreelite_begin(db, 1));
-  check("put(30..34)", putRange(cur, 30, 34));     /* savepoint 2 window */
+  check("put(30..34)", putRange(cur, 30, 34));     /* savepoint 2 */
   printf("after the deepest writes: %d rows\n", countWith(cur));
 
-  /* Roll back to savepoint 1: rows 30..34 vanish, 0..29 survive. */
+  /* ROLLBACK TO savepoint 1 undoes everything written after savepoint 1
+  ** was established, so rows 25..34 vanish and savepoint 2 is destroyed. */
   check("savepoint(ROLLBACK,1)",
         btreelite_savepoint(db, BTREELITE_SAVEPOINT_ROLLBACK, 1));
   printf("after ROLLBACK TO savepoint 1: %d rows\n", countWith(cur));
