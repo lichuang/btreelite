@@ -176,7 +176,7 @@ int main(int argc, char **argv){
     btreelite_db *db = 0;
     btreelite_cur *cur = 0;
     unsigned iRoot = 2;
-    int rc, n = 0;
+    int rc;
     rc = btreelite_open(ZDB, &db);
     CHECK( rc==BTREELITE_OK );
     rc = btreelite_begin(db, 1);

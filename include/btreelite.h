@@ -206,12 +206,16 @@ int btreelite_get(btreelite_cur *c, const void *k, int nK);
 /*
 ** Insert or overwrite the entry (k,nK) with value (v,nV).
 ** nV may be 0 (value is an empty string).  Returns BTREELITE_TOOBIG if nK
-** exceeds BTREELITE_MAX_KEY.
+** exceeds BTREELITE_MAX_KEY.  A write transaction must be open and c must
+** be a write cursor; otherwise BTREELITE_ERROR is returned.
 */
 int btreelite_put(btreelite_cur *c, const void *k, int nK,
                   const void *v, int nV);
 
-/* Delete the entry whose key equals (k,nK).  A missing key is not an error. */
+/*
+** Delete the entry whose key equals (k,nK).  A missing key is not an error.
+** A write transaction must be open and c must be a write cursor.
+*/
 int btreelite_del(btreelite_cur *c, const void *k, int nK);
 
 /* ---------------------------------------------------------------------- */
@@ -277,7 +281,8 @@ const void *btreelite_value_fetch(btreelite_cur *c, int *pAmt);
 ** Overwrite a range of the value of the current entry in place.
 ** The cursor must point at an entry whose key equals (k,nK) and the range
 ** [offset, offset+amt) must lie inside the existing value.  (The
-** incremental-blob-write mechanism of SQLite.)
+** incremental-blob-write mechanism of SQLite.)  A write transaction must
+** be open and c must be a write cursor.
 */
 int btreelite_value_write(btreelite_cur *c, const void *k, int nK,
                           uint32_t offset, uint32_t amt, const void *z);

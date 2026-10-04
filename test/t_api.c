@@ -19,7 +19,9 @@
 **      in place, and refuse ranges that would grow the value;
 **   3. integrity check: a healthy tree reports no errors and a tampered
 **      one is detected;
-**   4. memory usage: the handle reports non-zero heap.
+**   4. memory usage: the handle reports non-zero heap;
+**   5. mutating entry points require a write transaction and a write
+**      cursor.
 */
 #include "../include/btreelite.h"
 
@@ -232,6 +234,8 @@ int main(void){
   {
     char *pVal;
     uint32_t nVal = 0;
+    rc = btreelite_begin(db, 1);
+    CHECK( rc==BTREELITE_OK );
     rc = btreelite_cursor_open(db, iRoot, 1, &cur);
     CHECK( rc==BTREELITE_OK );
     pVal = (char*)malloc(1024);
@@ -263,6 +267,8 @@ int main(void){
       CHECK( rc==BTREELITE_NOTFOUND );
     }
     free(pVal);
+    rc = btreelite_commit(db);
+    CHECK( rc==BTREELITE_OK );
   }
 
   /* 3. Integrity check on the healthy tree. */
@@ -338,6 +344,63 @@ int main(void){
   {
     int n = btreelite_mem_used(db);
     CHECK( n>0 );
+  }
+
+  /* 5. Mutating entry points without a write transaction (or through a
+  ** read-only cursor) are refused: upstream relies on the VDBE layer for
+  ** this precondition, so release builds used to accept the write, corrupt
+  ** state silently and crash later in balance(). */
+  {
+    btreelite_cur *curRd = 0;
+    unsigned iNew = 0;
+    /* No transaction at all. */
+    rc = btreelite_put(cur, "no-txn", 6, "v", 1);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_del(cur, "row-0000", 8);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_value_write(cur, "row-0000", 8, 0, 1, "x");
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_create_tree(db, &iNew);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_clear_tree(db, iRoot);
+    CHECK( rc==BTREELITE_ERROR );
+    /* A read transaction does not suffice either. */
+    rc = btreelite_begin(db, 0);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_put(cur, "rd-txn", 6, "v", 1);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_del(cur, "row-0000", 8);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_value_write(cur, "row-0000", 8, 0, 1, "x");
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_create_tree(db, &iNew);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_clear_tree(db, iRoot);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_rollback(db);
+    CHECK( rc==BTREELITE_OK );
+    /* Nor does a read-only cursor inside a write transaction. */
+    rc = btreelite_begin(db, 1);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_cursor_open(db, iRoot, 0, &curRd);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_put(curRd, "rd-cur", 6, "v", 1);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_del(curRd, "row-0000", 8);
+    CHECK( rc==BTREELITE_ERROR );
+    rc = btreelite_value_write(curRd, "row-0000", 8, 0, 1, "x");
+    CHECK( rc==BTREELITE_ERROR );
+    btreelite_cursor_close(curRd);
+    /* The write cursor is unaffected and the tree untouched. */
+    rc = btreelite_put(cur, "guard-key", 9, "g", 1);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_del(cur, "guard-key", 9);
+    CHECK( rc==BTREELITE_OK );
+    rc = countInTxn(cur, &n);
+    CHECK( rc==BTREELITE_OK );
+    CHECK( n==13 );   /* 12 from the savepoint section plus "blob" */
+    rc = btreelite_rollback(db);
+    CHECK( rc==BTREELITE_OK );
   }
 
   btreelite_close(db);

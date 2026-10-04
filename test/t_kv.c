@@ -112,7 +112,10 @@ int main(void){
   }
 
   /* ---- Delete half, verify ---- */
+  btreelite_cursor_close(cur);
   rc = btreelite_begin(db, 1);
+  CHECK(rc==0);
+  rc = btreelite_cursor_open(db, iRoot, 1, &cur);
   CHECK(rc==0);
   for(i=0;i<200;i+=2){
     int nk = sprintf(key, "key-%06d", (i*37)%1000);

@@ -227,7 +227,7 @@ int main(void){
     rc = btreelite_cursor_open(db, aRoot[1], 1, &cur);
     CHECK( rc==BTREELITE_OK );
     {
-      char zKey[64], zVal[96];
+      char zKey[64];
       int i;
       /* Overwrite and add rows, then a fresh row in another tree. */
       for(i=0; i<10; i++){

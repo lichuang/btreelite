@@ -39,6 +39,8 @@ struct btreelite_db {
 struct btreelite_cur {
   BtCursor *pCur;
   Pgno iRoot;
+  Btree *pBt;             /* Btree the cursor is open on (for txn checks) */
+  int wrFlag;             /* Copy of the wrFlag passed to cursor_open */
 };
 
 /* Run the WAL autocheckpoint hook if a commit since the last pass added
@@ -66,6 +68,24 @@ static int kvMoveto(btreelite_cur *c, const void *k, int nK, int *pRes){
   int rc = kvCheckKey(k, nK);
   if( rc!=BTREELITE_OK ) return rc;
   return sqlite3BtreeKvMoveto(c->pCur, k, nK, 0, pRes);
+}
+
+/*
+** Guard a mutating entry point: a write transaction must be open, and
+** (for cursor operations) the cursor must be a write cursor.  Upstream
+** SQLite relies on the VDBE layer for these preconditions -- the btree
+** layer only asserts them, and the asserts vanish in release builds.
+** btreelite has no VDBE layer, so the API checks itself: writing without
+** a write transaction corrupts state silently and can crash in balance()
+** when pBt->pPage1 is NULL.
+*/
+static int kvCheckWriteTxn(Btree *pBt){
+  return sqlite3BtreeTxnState(pBt)==SQLITE_TXN_WRITE
+      ? BTREELITE_OK : BTREELITE_ERROR;
+}
+static int kvCheckWriteCur(btreelite_cur *c){
+  if( !c->wrFlag ) return BTREELITE_ERROR;
+  return kvCheckWriteTxn(c->pBt);
 }
 
 /* ---------------------------------------------------------------- */
@@ -119,13 +139,18 @@ int btreelite_create_tree(btreelite_db *p, unsigned *piRoot){
   Pgno iRoot = 0;
   int rc;
   if( p==0 ) return BTREELITE_ERROR;
+  rc = kvCheckWriteTxn(p->pBt);
+  if( rc!=BTREELITE_OK ) return rc;
   rc = sqlite3BtreeCreateTable(p->pBt, &iRoot, BTREE_BLOBKEY);
   if( rc==SQLITE_OK && piRoot ) *piRoot = (unsigned)iRoot;
   return rc;
 }
 
 int btreelite_clear_tree(btreelite_db *p, unsigned iRoot){
+  int rc;
   if( p==0 ) return BTREELITE_ERROR;
+  rc = kvCheckWriteTxn(p->pBt);
+  if( rc!=BTREELITE_OK ) return rc;
   return sqlite3BtreeClearTable(p->pBt, (int)iRoot, 0);
 }
 
@@ -229,6 +254,8 @@ int btreelite_cursor_open(btreelite_db *p, unsigned iRoot, int wrFlag,
   c = (btreelite_cur*)sqlite3MallocZero(sizeof(btreelite_cur));
   if( c==0 ) return BTREELITE_NOMEM;
   c->iRoot = iRoot;
+  c->pBt = p->pBt;
+  c->wrFlag = wrFlag ? 1 : 0;
   c->pCur = (BtCursor*)sqlite3Malloc(sqlite3BtreeCursorSize());
   if( c->pCur==0 ){ sqlite3_free(c); return BTREELITE_NOMEM; }
   sqlite3BtreeCursorZero(c->pCur);
@@ -263,6 +290,8 @@ int btreelite_put(btreelite_cur *c, const void *k, int nK,
   rc = kvCheckKey(k, nK);
   if( rc!=BTREELITE_OK ) return rc;
   if( nV<0 || (nV>0 && v==0) ) return BTREELITE_ERROR;
+  rc = kvCheckWriteCur(c);
+  if( rc!=BTREELITE_OK ) return rc;
   memset(&x, 0, sizeof(x));
   x.pKey = k;
   x.nKey = nK;
@@ -399,6 +428,8 @@ void btreelite_busy_timeout(btreelite_db *p, int ms){
 int btreelite_del(btreelite_cur *c, const void *k, int nK){
   int rc, res = 0;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
+  rc = kvCheckWriteCur(c);
+  if( rc!=BTREELITE_OK ) return rc;
   rc = kvMoveto(c, k, nK, &res);
   if( rc!=SQLITE_OK ) return rc;
   if( res!=0 ) return BTREELITE_NOTFOUND;
@@ -504,6 +535,8 @@ int btreelite_value_write(btreelite_cur *c, const void *k, int nK,
   int rc, res = 0;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
   if( z==0 && amt>0 ) return BTREELITE_ERROR;
+  rc = kvCheckWriteCur(c);
+  if( rc!=BTREELITE_OK ) return rc;
   rc = kvMoveto(c, k, nK, &res);
   if( rc!=SQLITE_OK ) return rc;
   if( res!=0 || sqlite3BtreeEof(c->pCur) ) return BTREELITE_NOTFOUND;
