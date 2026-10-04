@@ -4455,7 +4455,6 @@ int sqlite3PagerOpen(
   ** leave both nPathname and zPathname set to 0.
   */
   if( zFilename && zFilename[0] ){
-    const char *z;
     nPathname = pVfs->mxPathname + 1;
     zPathname = sqlite3DbMallocRaw(0, 2*(i64)nPathname);
     if( zPathname==0 ){
@@ -4473,12 +4472,17 @@ int sqlite3PagerOpen(
       }
     }
     nPathname = sqlite3Strlen30(zPathname);
-    z = zUri = &zFilename[sqlite3Strlen30(zFilename)+1];
-    while( *z ){
-      z += strlen(z)+1;
-      z += strlen(z)+1;
-    }
-    nUriByte = (int)(&z[1] - zUri);
+    /* Upstream expects zFilename to be a compound filename built by
+    ** sqlite3ParseUri (main name, NUL, NUL-separated URI parameters,
+    ** double-NUL end) and walks past the main name's NUL looking for a
+    ** parameter block.  btreelite passes the caller's plain string
+    ** through unchanged, which carries no parameter block and no double
+    ** NUL, so that walk reads past the end of the caller's buffer.
+    ** btreelite has no URI support: treat every file as parameter-free
+    ** (zUri==0 reserves one terminator byte, same layout as upstream's
+    ** parameter-free case). */
+    zUri = 0;
+    nUriByte = 1;
     assert( nUriByte>=1 );
     if( rc==SQLITE_OK && nPathname+8>pVfs->mxPathname ){
       /* This branch is taken when the journal path required by

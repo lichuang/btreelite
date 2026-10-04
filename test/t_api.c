@@ -401,6 +401,8 @@ int main(void){
     CHECK( n==13 );   /* 12 from the savepoint section plus "blob" */
     rc = btreelite_rollback(db);
     CHECK( rc==BTREELITE_OK );
+    btreelite_cursor_close(cur);
+    cur = 0;
   }
 
   btreelite_close(db);

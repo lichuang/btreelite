@@ -59,6 +59,7 @@ int main(void){
   rc = btreelite_commit(db);
   CHECK(rc==0);
   btreelite_cursor_close(cur);
+  cur = 0;
   rc = btreelite_cursor_open(db, iRoot, 0, &cur);
   CHECK(rc==0);
 
@@ -125,6 +126,7 @@ int main(void){
   rc = btreelite_commit(db);
   CHECK(rc==0);
   btreelite_cursor_close(cur);
+  cur = 0;
   rc = btreelite_cursor_open(db, iRoot, 0, &cur);
   CHECK(rc==0);
   {
@@ -141,6 +143,8 @@ int main(void){
   {
     rc = btreelite_begin(db, 1);
     CHECK(rc==0);
+    btreelite_cursor_close(cur);
+    cur = 0;
     rc = btreelite_cursor_open(db, iRoot, 1, &cur);
     CHECK(rc==0);
     rc = btreelite_put(cur, "temp-key", 8, "temp-value", 10);
@@ -148,6 +152,7 @@ int main(void){
     rc = btreelite_rollback(db);
     CHECK(rc==0);
     btreelite_cursor_close(cur);
+    cur = 0;
     rc = btreelite_begin(db, 0);
     CHECK(rc==0);
     rc = btreelite_cursor_open(db, iRoot, 0, &cur);
@@ -161,6 +166,8 @@ int main(void){
       CHECK(nCount==100);
     }
   }
+  btreelite_cursor_close(cur);
+  cur = 0;
 
   /* ---- Key length limit: exactly MAX_KEY ok, one more rejected ---- */
   {
@@ -179,6 +186,7 @@ int main(void){
     rc = btreelite_commit(db);
     CHECK(rc==0);
     btreelite_cursor_close(cur);
+    cur = 0;
     rc = btreelite_begin(db, 0);
     CHECK(rc==0);
     rc = btreelite_cursor_open(db, iRoot, 0, &cur);
