@@ -292,6 +292,48 @@ int main(void){
     if( zOut ) btreelite_free(zOut);
   }
 
+  /* 3b. A caller-owned transaction must survive the check: the checker
+  ** used to commit an open write transaction behind the caller's back. */
+  {
+    char *zOut = 0;
+    int nErr = -1;
+    rc = btreelite_begin(db, 1);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_put(cur, "icheck-key", 10, "v", 1);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_integrity_check(db, iRoot, 100, &nErr, &zOut);
+    CHECK( rc==BTREELITE_OK );   /* checks the uncommitted state */
+    CHECK( nErr==0 );
+    if( zOut ) btreelite_free(zOut);
+    /* The write transaction is still open: the new key is visible... */
+    rc = btreelite_get(cur, "icheck-key", 10);
+    CHECK( rc==BTREELITE_OK );
+    /* ...and rolling back undoes it (had the check committed, the key
+    ** would survive and this rollback would fail). */
+    rc = btreelite_rollback(db);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_begin(db, 1);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_get(cur, "icheck-key", 10);
+    CHECK( rc==BTREELITE_NOTFOUND );
+    rc = btreelite_rollback(db);
+    CHECK( rc==BTREELITE_OK );
+
+    /* Same for a caller-owned read transaction. */
+    rc = btreelite_begin(db, 0);
+    CHECK( rc==BTREELITE_OK );
+    nErr = -1; zOut = 0;
+    rc = btreelite_integrity_check(db, iRoot, 100, &nErr, &zOut);
+    CHECK( rc==BTREELITE_OK );
+    CHECK( nErr==0 );
+    if( zOut ) btreelite_free(zOut);
+    /* The read transaction is still open and usable. */
+    rc = btreelite_get(cur, "row-0003", 8);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_rollback(db);
+    CHECK( rc==BTREELITE_OK );
+  }
+
   /* 4. Memory usage. */
   {
     int n = btreelite_mem_used(db);

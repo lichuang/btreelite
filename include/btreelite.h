@@ -299,6 +299,11 @@ int btreelite_checkpoint(btreelite_db *p, int eMode, int *pnLog, int *pnCkpt);
 ** BTREELITE_CORRUPT otherwise with *pnErr error messages written into a
 ** string allocated by the library and returned in *pzOut (free with
 ** btreelite_free()).
+**
+** If no transaction is open, the check runs in a read transaction that is
+** opened and closed by this call.  If the caller already holds a read or
+** write transaction, the check runs inside it (seeing uncommitted changes)
+** and the caller's transaction is left untouched.
 */
 int btreelite_integrity_check(btreelite_db *p, unsigned iRoot, int mxErr,
                               int *pnErr, char **pzOut);

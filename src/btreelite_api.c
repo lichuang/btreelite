@@ -531,6 +531,7 @@ int btreelite_integrity_check(btreelite_db *p, unsigned iRoot, int mxErr,
   ** btreelite, so the memory cells only need to be addressable storage. */
   char aCnt[3*128];
   int rc;
+  int bOwnTxn = 0;     /* True if this call opened the read transaction */
 
   if( p==0 || pnErr==0 || pzOut==0 ) return BTREELITE_ERROR;
   *pnErr = 0;
@@ -552,13 +553,19 @@ int btreelite_integrity_check(btreelite_db *p, unsigned iRoot, int mxErr,
   }else{
     aRoot[nRoot++] = (Pgno)iRoot;
   }
-  rc = btreelite_begin(p, 0);
-  if( rc!=BTREELITE_OK ) return rc;
+  /* If the caller already holds a transaction (read or write), run inside
+  ** it: the checker only reads, and committing here would commit the
+  ** caller's uncommitted changes behind its back. */
+  if( sqlite3BtreeTxnState(p->pBt)==SQLITE_TXN_NONE ){
+    rc = btreelite_begin(p, 0);
+    if( rc!=BTREELITE_OK ) return rc;
+    bOwnTxn = 1;
+  }
   memset(aCnt, 0, sizeof(aCnt));
   rc = (int)sqlite3BtreeIntegrityCheck(&p->env, p->pBt, aRoot, (Mem*)aCnt,
                       nRoot, mxErr, pnErr, pzOut);
   if( rc!=SQLITE_OK && *pzOut ){ btreelite_free(*pzOut); *pzOut = 0; }
-  btreelite_commit(p);
+  if( bOwnTxn ) btreelite_commit(p);
   return rc;
 }
 
