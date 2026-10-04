@@ -2970,31 +2970,12 @@ int sqlite3BtreeGetAutoVacuum(Btree *p){
 }
 
 /*
-** If the user has not set the safety-level for this database connection
-** using "PRAGMA synchronous", and if the safety-level is not already
-** set to the value passed to this function as the second parameter,
-** set it so.
+** Upstream's setDefaultSyncFlag() is removed: it walked db->aDb[] without
+** a bounds check looking for the Btree that owns a given BtShared, which
+** is a schema-layer invariant btreelite does not maintain (the array has
+** exactly one slot).  btreelite sets the pager sync level explicitly via
+** btreelite_sync(), so the hook has no caller left.
 */
-#if SQLITE_DEFAULT_SYNCHRONOUS!=SQLITE_DEFAULT_WAL_SYNCHRONOUS \
-    && !defined(SQLITE_OMIT_WAL)
-static void setDefaultSyncFlag(BtShared *pBt, u8 safety_level){
-  sqlite3 *db;
-  Db *pDb;
-  if( (db=pBt->db)!=0 && (pDb=db->aDb)!=0 ){
-    while( pDb->pBt==0 || pDb->pBt->pBt!=pBt ){ pDb++; }
-    if( pDb->bSyncSet==0
-     && pDb->safety_level!=safety_level
-     && pDb!=&db->aDb[1]
-    ){
-      pDb->safety_level = safety_level;
-      sqlite3PagerSetFlags(pBt->pPager,
-          pDb->safety_level | (db->flags & PAGER_FLAGS_MASK));
-    }
-  }
-}
-#else
-# define setDefaultSyncFlag(pBt,safety_level)
-#endif
 
 /* Forward declaration */
 static int newDatabase(BtShared*);
@@ -3073,16 +3054,11 @@ static int lockBtree(BtShared *pBt){
       rc = sqlite3PagerOpenWal(pBt->pPager, &isOpen);
       if( rc!=SQLITE_OK ){
         goto page1_init_failed;
-      }else{
-        setDefaultSyncFlag(pBt, SQLITE_DEFAULT_WAL_SYNCHRONOUS+1);
-        if( isOpen==0 ){
-          releasePageOne(pPage1);
-          return SQLITE_OK;
-        }
+      }else if( isOpen==0 ){
+        releasePageOne(pPage1);
+        return SQLITE_OK;
       }
       rc = SQLITE_NOTADB;
-    }else{
-      setDefaultSyncFlag(pBt, SQLITE_DEFAULT_SYNCHRONOUS+1);
     }
 #endif
 
@@ -9005,14 +8981,16 @@ int sqlite3BtreeInsert(
     pCur->eState = CURSOR_INVALID;
     if( (flags & BTREE_SAVEPOSITION) && rc==SQLITE_OK ){
       btreeReleaseAllCursorPages(pCur);
-      if( pCur->pKeyInfo ){
-        assert( pCur->pKey==0 );
-        pCur->pKey = sqlite3Malloc( pX->nKey );
-        if( pCur->pKey==0 ){
-          rc = SQLITE_NOMEM;
-        }else{
-          memcpy(pCur->pKey, pX->pKey, pX->nKey);
-        }
+      /* A KV cursor never carries KeyInfo, so the key must be saved
+      ** unconditionally, exactly as saveCursorKey() does -- upstream
+      ** skips the copy for table cursors because an integer rowid
+      ** survives in nKey alone, but a KV byte-string key does not. */
+      assert( pCur->pKey==0 );
+      pCur->pKey = sqlite3Malloc( pX->nKey + 1 );
+      if( pCur->pKey==0 ){
+        rc = SQLITE_NOMEM;
+      }else{
+        memcpy(pCur->pKey, pX->pKey, pX->nKey);
       }
       pCur->eState = CURSOR_REQUIRESEEK;
       pCur->nKey = pX->nKey;

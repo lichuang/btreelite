@@ -19,7 +19,9 @@
 **   4. crash recovery: a child process that writes and exits without
 **      committing leaves its WAL frames for the next connection to roll
 **      back;
-**   5. automatic checkpointing after every nFrame commits;
+**   5. automatic checkpointing after every nFrame commits -- and proof
+**      that the hook actually fires (the log stays short without any
+**      explicit checkpoint call);
 **   6. leaving WAL mode (checkpoint, drop -wal, version bytes back to 1);
 **   7. WAL transitions inside a transaction are refused;
 **   8. the busy timeout installs and clears.
@@ -263,6 +265,30 @@ int main(void){
     CHECK( nCount==71 );   /* seed + 0..59 + 71..80 */
   }
 
+  /* 4b. The autocheckpoint hook really fires: with no explicit
+  ** btreelite_checkpoint() calls the log must still stay short.
+  ** (Regression: the hook locates the Btree via db->aDb[0].pBt, which
+  ** used to be left NULL, so it checkpointed nothing and the log grew
+  ** without bound.) */
+  {
+    int i, nLog = -1, nCkpt = -1;
+    btreelite_wal_autocheckpoint(db, 1);
+    for(i=0; i<10; i++){
+      rc = writeEntries(db, iRoot, 91+i, 91+i);
+      CHECK( rc==BTREELITE_OK );
+    }
+    /* Observe what is left in the log: had the hook not fired after each
+    ** commit, all ~20 frames of the loop above would still be pending. */
+    rc = btreelite_checkpoint(db, BTREELITE_CHECKPOINT_PASSIVE,
+                              &nLog, &nCkpt);
+    CHECK( rc==BTREELITE_OK );
+    CHECK( nLog<=4 );
+    btreelite_wal_autocheckpoint(db, 0);
+    rc = countEntries(db, iRoot, &nCount);
+    CHECK( rc==BTREELITE_OK );
+    CHECK( nCount==81 );   /* seed + 0..59 + 71..80 + 91..100 */
+  }
+
   /* 5. Leave WAL mode: log is checkpointed and removed, version bytes 1. */
   {
     FILE *f;
@@ -273,7 +299,7 @@ int main(void){
     CHECK( access(ZWAL, 0)!=0 );
     rc = countEntries(db, iRoot, &nRow);
     CHECK( rc==BTREELITE_OK );
-    CHECK( nRow==71 );
+    CHECK( nRow==81 );
     btreelite_close(db);
     f = fopen(ZDB, "rb");
     if( f ){

@@ -109,6 +109,11 @@ int btreelite_open(const char *zPath, btreelite_db **ppDb){
   rc = sqlite3BtreeOpen(sqlite3_vfs_find(0), zPath, &(*ppDb)->env,
                         &(*ppDb)->pBt, 0, vfsFlags);
   if( rc==SQLITE_OK ){
+    /* The single Btree is registered in the connection's aDb[0] slot:
+    ** sqlite3WalDefaultHook() (autocheckpoint) and the status routines
+    ** locate it there.  Without this the autocheckpoint hook ran with a
+    ** NULL Btree and checkpointed nothing. */
+    (*ppDb)->env.aDb[0].pBt = (*ppDb)->pBt;
     /* WAL is the default.  journal_mode() falls back to MEMORY by itself
     ** for an in-memory database or an environment that cannot host a WAL. */
     btreelite_journal_mode(*ppDb, BTREELITE_JOURNAL_WAL);

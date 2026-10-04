@@ -900,9 +900,10 @@ typedef int (*RecordCompare)(int, const void*, UnpackedRecord*);
 #include "wal.h"
 
 /*
-** The Db type is retained because setDefaultSyncFlag() in btree.c walks
-** db->aDb[] looking for the Btree whose pBt it was given.  In btreelite
-** there is exactly one database per handle, so the array has length 1.
+** The Db type is retained because db->aDb[0].pBt registers the handle's
+** only Btree: sqlite3WalDefaultHook() (autocheckpoint) and the status
+** routines locate it there.  In btreelite there is exactly one database
+** per handle, so the array has length 1.
 */
 typedef struct Btree Btree;
 typedef struct BtShared BtShared;
