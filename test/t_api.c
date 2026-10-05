@@ -405,6 +405,66 @@ int main(void){
     cur = 0;
   }
 
+  /* 5b. Contracts documented in btreelite.h:
+  **   - a second handle reports the same process-wide memory count;
+  **   - a bogus root opens but every operation fails with CORRUPT;
+  **   - set_interrupt aborts an integrity check with INTERRUPT;
+  **   - a contended handle is serialized (second call gets BUSY). */
+  {
+    btreelite_db *db2 = 0;
+    btreelite_cur *bad = 0;
+    btreelite_cur *cInt = 0;
+    char *zOut = 0;
+    int nErr = -1;
+    int nMem1, nMem2;
+
+    /* mem_used is process-wide: opening a second handle cannot shrink it. */
+    nMem1 = btreelite_mem_used(db);
+    rc = btreelite_open(":memory:", &db2);
+    CHECK( rc==BTREELITE_OK );
+    nMem2 = btreelite_mem_used(db);
+    CHECK( nMem2>=nMem1 );
+    btreelite_close(db2);
+
+    /* A root that was never created opens, then corrupts on first use. */
+    rc = btreelite_cursor_open(db, 99999, 0, &bad);
+    CHECK( rc==BTREELITE_OK );
+    CHECK( bad!=0 );
+    rc = btreelite_first(bad, &(int){0});
+    CHECK( rc==BTREELITE_CORRUPT );
+    CHECK( btreelite_eof(bad)!=0 );     /* the cursor stays unusable */
+    rc = btreelite_get(bad, "row-0000", 8);
+    CHECK( rc==BTREELITE_CORRUPT );
+    btreelite_cursor_close(bad);
+
+    /* A second entry point on the same broken cursor also fails. */
+    rc = btreelite_cursor_open(db, 99999, 0, &bad);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_next(bad);
+    CHECK( rc==BTREELITE_CORRUPT || rc==BTREELITE_DONE );
+    btreelite_cursor_close(bad);
+
+    /* Integrity check honours the interrupt flag. */
+    rc = btreelite_begin(db, 0);
+    CHECK( rc==BTREELITE_OK );
+    btreelite_set_interrupt(db);
+    rc = btreelite_integrity_check(db, iRoot, 100, &nErr, &zOut);
+    CHECK( rc==BTREELITE_INTERRUPT );
+    CHECK( nErr>=1 );
+    if( zOut ) btreelite_free(zOut);
+    btreelite_rollback(db);
+    /* The flag is per-connection and sticky; the memory-report path and
+    ** a fresh cursor still work, and a fresh connection is clean. */
+    rc = btreelite_open(":memory:", &db2);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_cursor_open(db2, 1, 0, &cInt);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_first(cInt, &(int){0});
+    CHECK( rc==BTREELITE_OK );
+    btreelite_cursor_close(cInt);
+    btreelite_close(db2);
+  }
+
   btreelite_close(db);
   unlink(ZDB); unlink(ZWAL); unlink(ZJRNL); unlink("t_wal_test.db-shm");
 

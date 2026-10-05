@@ -11,6 +11,13 @@
 ** ACID transactions, rollback-journal and WAL crash recovery, and
 ** cross-process file locking are all inherited from SQLite unchanged.
 **
+** Threading: a btreelite_db handle and every cursor opened on it are for
+** use by one thread at a time (btreelite serializes access with its
+** internal mutex, so a second thread's calls return BTREELITE_BUSY rather
+** than corrupting state, but a contended handle is still program-error
+** territory).  Distinct handles -- distinct files, or each thread's own
+** ":memory:" database -- may be used from distinct threads concurrently.
+**
 ** The source is public domain.  Derived from SQLite, which is likewise
 ** public domain.
 */
@@ -140,7 +147,13 @@ int btreelite_savepoint(btreelite_db *p, int op, int iSavepoint);
 /* Query the transaction state: 0=none, 1=read, 2=write. */
 int btreelite_txn_state(btreelite_db *p);
 
-/* Request that the current operation abort with BTREELITE_INTERRUPT. */
+/*
+** Request that the current integrity check abort with BTREELITE_INTERRUPT.
+** The interrupt flag is consulted only by btreelite_integrity_check
+** (and the underlying whole-tree count): set it before, or concurrently
+** with, such a check.  get/put/next traffic does not poll the flag and is
+** not interruptible.
+*/
 void btreelite_set_interrupt(btreelite_db *p);
 
 /* Configure busy timeout in milliseconds (0 = default, negative = none). */
@@ -185,6 +198,12 @@ void btreelite_mmap_limit(btreelite_db *p, long nLimit);
 ** read-only cursor or 1 for a read-write cursor (a write transaction must
 ** be open for the latter).  *ppCur receives the cursor; it must be released
 ** with btreelite_cursor_close().
+**
+** Root pages come from btreelite_create_tree() and the application keeps
+** the numbers on its own.  A root number that was never obtained that way
+** (or that no longer refers to a tree) still opens without error, but the
+** first cursor operation fails with BTREELITE_CORRUPT and every later
+** operation fails -- treat the returned error and destroy the cursor.
 */
 int btreelite_cursor_open(btreelite_db *p, unsigned iRoot, int wrFlag,
                           btreelite_cur **ppCur);
@@ -351,7 +370,12 @@ void btreelite_wal_autocheckpoint(btreelite_db *p, int nFrames);
 */
 void btreelite_free(void *p);
 
-/* Return the approximate number of bytes of heap used by the handle. */
+/*
+** Return the number of bytes of heap currently acquired through the
+** library's allocator.  The counter is process-wide (malloc.c tracks a
+** single running total for all handles), so with several open databases
+** the number returned for any one handle is the sum over all of them.
+*/
 int btreelite_mem_used(btreelite_db *p);
 
 #ifdef __cplusplus
