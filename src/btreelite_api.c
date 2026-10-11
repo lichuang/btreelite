@@ -34,6 +34,7 @@ struct btreelite_db {
   sqlite3 env;
   Btree *pBt;
   int iSync;              /* Current BTREELITE_SYNC_* level (FULL by default) */
+  btreelite_cur *pCurs;   /* Every open cursor on this handle (see close) */
 };
 
 struct btreelite_cur {
@@ -41,6 +42,8 @@ struct btreelite_cur {
   Pgno iRoot;
   Btree *pBt;             /* Btree the cursor is open on (for txn checks) */
   int wrFlag;             /* Copy of the wrFlag passed to cursor_open */
+  btreelite_db *pDb;      /* Owning handle (unlinks from pCurs) */
+  btreelite_cur *pNext;   /* Next cursor of the same handle */
 };
 
 /* Run the WAL autocheckpoint hook if a commit since the last pass added
@@ -129,6 +132,7 @@ int btreelite_open(const char *zPath, btreelite_db **ppDb){
 
 void btreelite_close(btreelite_db *p){
   if( p==0 ) return;
+  while( p->pCurs ) btreelite_cursor_close(p->pCurs);
   sqlite3BtreeClose(p->pBt);
   sqlite3_mutex_leave(p->env.mutex);
   sqlite3_mutex_free(p->env.mutex);
@@ -256,10 +260,17 @@ int btreelite_cursor_open(btreelite_db *p, unsigned iRoot, int wrFlag,
   btreelite_cur *c;
   if( p==0 || ppCur==0 ) return BTREELITE_ERROR;
   *ppCur = 0;
+  /* Upstream's btreeCursor() asserts that a transaction is open -- the
+  ** VDBE layer supplied that precondition there, and this library has
+  ** none, so check it here (like the other guards above). */
+  if( sqlite3BtreeTxnState(p->pBt)==SQLITE_TXN_NONE ) return BTREELITE_ERROR;
   c = (btreelite_cur*)sqlite3MallocZero(sizeof(btreelite_cur));
   if( c==0 ) return BTREELITE_NOMEM;
   c->iRoot = iRoot;
   c->pBt = p->pBt;
+  c->pDb = p;
+  c->pNext = p->pCurs;
+  p->pCurs = c;
   c->wrFlag = wrFlag ? 1 : 0;
   c->pCur = (BtCursor*)sqlite3Malloc(sqlite3BtreeCursorSize());
   if( c->pCur==0 ){ sqlite3_free(c); return BTREELITE_NOMEM; }
@@ -278,7 +289,12 @@ int btreelite_cursor_open(btreelite_db *p, unsigned iRoot, int wrFlag,
 }
 
 void btreelite_cursor_close(btreelite_cur *c){
+  btreelite_cur **pp;
   if( c==0 ) return;
+  /* Unlink from the owning handle's cursor list first. */
+  pp = &c->pDb->pCurs;
+  while( *pp && *pp!=c ) pp = &(*pp)->pNext;
+  if( *pp ) *pp = c->pNext;
   if( c->pCur ){ sqlite3BtreeCloseCursor(c->pCur); sqlite3_free(c->pCur); }
   sqlite3_free(c);
 }

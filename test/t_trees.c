@@ -292,6 +292,54 @@ int main(void){
     btreelite_close(db);
   }
 
+  /* Section 6: a root created in an uncommitted transaction dies with
+  ** the rollback (the file truncates back); reusing the handed-out
+  ** number must fail like any unknown root, and a fresh tree works. */
+  {
+    unsigned iRoot1 = 0, iRoot2 = 0;
+    int res;
+    rc = btreelite_open(ZDB, &db);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_begin(db, 1);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_create_tree(db, &iRoot1);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_rollback(db);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_page_count(db)<iRoot1 ? BTREELITE_OK : 1;   /* page gone */
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_begin(db, 0);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_cursor_open(db, iRoot1, 0, &cur);
+    CHECK( rc==BTREELITE_OK );                  /* opens... */
+    rc = btreelite_first(cur, &res);
+    CHECK( rc==BTREELITE_CORRUPT );             /* ...and is unusable */
+    CHECK( btreelite_eof(cur)!=0 );
+    btreelite_cursor_close(cur);
+    btreelite_commit(db);
+    /* A tree created and committed survives the next rollback. */
+    rc = btreelite_begin(db, 1);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_create_tree(db, &iRoot2);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_commit(db);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_begin(db, 1);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_rollback(db);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_begin(db, 0);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_cursor_open(db, iRoot2, 0, &cur);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_first(cur, &res);
+    CHECK( rc==BTREELITE_OK );
+    CHECK( res==1 );                            /* committed: empty */
+    btreelite_cursor_close(cur);
+    btreelite_commit(db);
+    btreelite_close(db);
+  }
+
   btreelite_free(0);   /* harmless */
   unlink(ZDB); unlink(ZWAL); unlink(ZSHM); unlink(ZJRNL);
 

@@ -1,6 +1,24 @@
 sqlite-src-3530400
 commit-message
 
+# fuzz (fuzz/ sources and fuzz/seeds/*.bin are checked in)
+fuzz/obj/
+fuzz/objz/
+fuzz/srclib/
+fuzz/srclibz/
+fuzz/*.a
+fuzz/mkseeds
+fuzz/fuzz_replay
+fuzz/fz_api
+fuzz/corpus*/
+fuzz/crash-*
+fuzz/leak-*
+fuzz/timeout-*
+fuzz/oomit-*
+fuzz/min*
+fuzz/Slow-Unit-*
+fuzz/*.log
+
 # Prerequisites
 *.d
 

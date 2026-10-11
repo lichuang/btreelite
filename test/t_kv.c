@@ -60,6 +60,9 @@ int main(void){
   CHECK(rc==0);
   btreelite_cursor_close(cur);
   cur = 0;
+  /* Reads need a transaction (the api guard requires one). */
+  rc = btreelite_begin(db, 0);
+  CHECK(rc==0);
   rc = btreelite_cursor_open(db, iRoot, 0, &cur);
   CHECK(rc==0);
 
@@ -127,6 +130,9 @@ int main(void){
   CHECK(rc==0);
   btreelite_cursor_close(cur);
   cur = 0;
+  /* Reads need a transaction (the api guard requires one). */
+  rc = btreelite_begin(db, 0);
+  CHECK(rc==0);
   rc = btreelite_cursor_open(db, iRoot, 0, &cur);
   CHECK(rc==0);
   {

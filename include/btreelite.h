@@ -11,12 +11,15 @@
 ** ACID transactions, rollback-journal and WAL crash recovery, and
 ** cross-process file locking are all inherited from SQLite unchanged.
 **
-** Threading: a btreelite_db handle and every cursor opened on it are for
-** use by one thread at a time (btreelite serializes access with its
-** internal mutex, so a second thread's calls return BTREELITE_BUSY rather
-** than corrupting state, but a contended handle is still program-error
-** territory).  Distinct handles -- distinct files, or each thread's own
-** ":memory:" database -- may be used from distinct threads concurrently.
+** Threading: a btreelite_db handle and every cursor opened on it are
+** single-threaded -- use one handle (and its cursors) from one thread at
+** a time; the library does not lock the public API against concurrent
+** callers, and contended same-handle calls are program error (they may
+** reject with BUSY/LOCKED-family codes in practice, but that rejection
+** is not a contract).  Distinct handles -- distinct files, or each
+** thread's own ":memory:" database -- may be used from distinct threads
+** concurrently, and cross-process access to one file is mediated by file
+** locks, as inherited from SQLite.
 **
 ** The source is public domain.  Derived from SQLite, which is likewise
 ** public domain.
@@ -88,7 +91,12 @@ typedef struct btreelite_cur btreelite_cur;   /* opaque cursor handle */
 */
 int btreelite_open(const char *zPath, btreelite_db **ppDb);
 
-/* Close the database.  Active transactions are rolled back. */
+/*
+** Close the database.  Active transactions are rolled back.  Any cursor
+** still open on the handle is closed first (closing in the other order
+** would leave the cursors dangling), so an explicit
+** btreelite_cursor_close() per cursor is recommended but not required.
+*/
 void btreelite_close(btreelite_db *p);
 
 /* ---------------------------------------------------------------------- */
@@ -97,8 +105,13 @@ void btreelite_close(btreelite_db *p);
 
 /*
 ** Create a new empty tree inside the database.  On success *piRoot receives
-** the root page number of the new tree, which the application is responsible
-** for persisting.  A write transaction must be open.
+** the root page number of the new tree, which the application is
+** responsible for persisting.  A write transaction must be open.
+**
+** The root number is only guaranteed once its transaction commits: a
+** rollback (of the whole transaction or a ROLLBACK TO a savepoint that
+** predates the creation) releases the root page again, and using the old
+** number afterwards fails, like any other unknown root.
 */
 int btreelite_create_tree(btreelite_db *p, unsigned *piRoot);
 
@@ -195,9 +208,10 @@ void btreelite_mmap_limit(btreelite_db *p, long nLimit);
 
 /*
 ** Open a cursor on the tree rooted at iRoot.  wrFlag must be 0 for a
-** read-only cursor or 1 for a read-write cursor (a write transaction must
-** be open for the latter).  *ppCur receives the cursor; it must be released
-** with btreelite_cursor_close().
+** read-only cursor or 1 for a read-write cursor.  A transaction (read or
+** write) must already be open on p -- otherwise BTREELITE_ERROR; a write
+** cursor additionally requires an open WRITE transaction.  *ppCur
+** receives the cursor; it must be released with btreelite_cursor_close().
 **
 ** Root pages come from btreelite_create_tree() and the application keeps
 ** the numbers on its own.  A root number that was never obtained that way
@@ -257,8 +271,10 @@ int btreelite_prev(btreelite_cur *c);
 
 /*
 ** Move the cursor to the first entry whose key is greater than or equal
-** to (k,nK).  *pRes is 0 if such an entry exists, 1 if (k,nK) sorts after
-** every entry in the tree (cursor is then at "end").
+** to (k,nK).  Returns BTREELITE_OK; btreelite_eof() reports whether such
+** an entry exists (it is 1 on an empty tree and when (k,nK) sorts after
+** every entry).  While not EOF, key/value accessors read the landed
+** entry; compare its key to (k,nK) to tell an exact match.
 */
 int btreelite_seek(btreelite_cur *c, const void *k, int nK);
 

@@ -358,6 +358,12 @@ int main(void){
     CHECK( rc==BTREELITE_ERROR );
     rc = btreelite_del(cur, "row-0000", 8);
     CHECK( rc==BTREELITE_ERROR );
+    /* Even a read cursor needs an open transaction. */
+    { btreelite_cur *noT = 0;
+      rc = btreelite_cursor_open(db, iRoot, 0, &noT);
+      CHECK( rc==BTREELITE_ERROR );
+      CHECK( noT==0 );
+    }
     rc = btreelite_value_write(cur, "row-0000", 8, 0, 1, "x");
     CHECK( rc==BTREELITE_ERROR );
     rc = btreelite_create_tree(db, &iNew);
@@ -426,7 +432,10 @@ int main(void){
     CHECK( nMem2>=nMem1 );
     btreelite_close(db2);
 
-    /* A root that was never created opens, then corrupts on first use. */
+    /* A root that was never created opens, then corrupts on first use.
+    ** (Even the bogus-root cursor still requires an open transaction.) */
+    rc = btreelite_begin(db, 0);
+    CHECK( rc==BTREELITE_OK );
     rc = btreelite_cursor_open(db, 99999, 0, &bad);
     CHECK( rc==BTREELITE_OK );
     CHECK( bad!=0 );
@@ -456,6 +465,8 @@ int main(void){
     /* The flag is per-connection and sticky; the memory-report path and
     ** a fresh cursor still work, and a fresh connection is clean. */
     rc = btreelite_open(":memory:", &db2);
+    CHECK( rc==BTREELITE_OK );
+    rc = btreelite_begin(db2, 0);
     CHECK( rc==BTREELITE_OK );
     rc = btreelite_cursor_open(db2, 1, 0, &cInt);
     CHECK( rc==BTREELITE_OK );

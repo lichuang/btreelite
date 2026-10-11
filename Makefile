@@ -135,3 +135,80 @@ bench: bench_kv bench_sql
 	./bench_sql $(BENCHARG) ; ./bench_kv $(BENCHARG)
 
 .PHONY: bench
+
+# ----------------------------------------------------------------------
+# Fuzz (Target A: stateful API fuzz, docs/fuzz-design.md)
+#   fuzz-seeds      regenerate fuzz/seeds/*.bin (checked-in regression corpus)
+#   fuzz            replay the corpus twice per stream (sanitized, no deps)
+#   fuzz-libfuzzer  build the coverage-guided libFuzzer binary
+# The library is rebuilt with sanitizers into fuzz/srclib*/; the plain
+# $(LIB) build is untouched.
+# ----------------------------------------------------------------------
+FUZZ_SAN  = -Isrc -Iinclude -I. -O1 -g -fsanitize=address,undefined \
+            -fno-omit-frame-pointer -Wall -Wno-unused-parameter \
+            -Wno-deprecated-declarations
+FUZZ_FZZ_SAN = -Isrc -Iinclude -I. -O1 -g -fsanitize=address \
+            -fno-omit-frame-pointer -Wall -Wno-unused-parameter \
+            -Wno-deprecated-declarations
+# (libFuzzer + UBSan do not link on macOS: the two runtimes carry
+# duplicate symbol-table entries this ld64 rejects; the fuzzer builds
+# use ASan only, which is the standard OSS-Fuzz mac configuration.)
+
+fuzz/srclib fuzz/obj:
+	mkdir -p fuzz/srclib fuzz/obj fuzz
+
+FUZZSRCLIB_O = $(SOURCES:%.c=fuzz/srclib/%.o)
+$(FUZZSRCLIB_O): fuzz/srclib/%.o: src/%.c fuzz/srclib
+	$(CC) $(FUZZ_SAN) -c $< -o $@
+
+fuzz/libbt_fz.a: $(FUZZSRCLIB_O)
+	/usr/bin/libtool -static -o $@ $(FUZZSRCLIB_O)
+
+FUZZ_HARNESS_OBJS = fuzz/obj/drv.o fuzz/obj/model.o fuzz/obj/target_api.o \
+                    fuzz/obj/mkseeds.o fuzz/obj/replay.o fuzz/obj/wrap.o
+$(FUZZ_HARNESS_OBJS): fuzz/obj/%.o: fuzz/%.c fuzz/obj
+	$(CC) $(FUZZ_SAN) -c $< -o $@
+
+fuzz/mkseeds: fuzz/obj/mkseeds.o fuzz/obj/drv.o
+	$(CC) $(FUZZ_SAN) -o $@ fuzz/obj/mkseeds.o fuzz/obj/drv.o
+
+fuzz/fuzz_replay: fuzz/obj/replay.o fuzz/obj/drv.o fuzz/obj/model.o \
+                 fuzz/obj/target_api.o fuzz/libbt_fz.a
+	$(CC) $(FUZZ_SAN) -o $@ fuzz/obj/replay.o fuzz/obj/drv.o \
+		fuzz/obj/model.o fuzz/obj/target_api.o fuzz/libbt_fz.a
+
+fuzz-seeds: fuzz/mkseeds
+	./fuzz/mkseeds
+
+fuzz: fuzz-seeds fuzz/fuzz_replay
+	./fuzz/fuzz_replay fuzz/seeds
+
+# libFuzzer binary: coverage instrumentation needs a second library build
+# with -fsanitize=fuzzer-no-link; the link adds -fsanitize=fuzzer itself.
+fuzz/srclibz fuzz/objz:
+	mkdir -p fuzz/srclibz fuzz/objz
+
+FUZZZLIB_O = $(SOURCES:%.c=fuzz/srclibz/%.o)
+$(FUZZZLIB_O): fuzz/srclibz/%.o: src/%.c fuzz/srclibz
+	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer-no-link -c $< -o $@
+
+FUZZZ_OBJS = fuzz/objz/wrap.o fuzz/objz/drv.o fuzz/objz/model.o \
+             fuzz/objz/target_api.o
+$(FUZZZ_OBJS): fuzz/objz/%.o: fuzz/%.c fuzz/objz
+	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer-no-link -c $< -o $@
+
+# The libFuzzer link uses the raw objects: macOS libtool -static cannot
+# carry fuzzer instrumentation through an archive (ld64 reports
+# invalid r_symbolnum).
+fuzz/fz_api: $(FUZZZ_OBJS) $(FUZZZLIB_O)
+	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer -o $@ $(FUZZZ_OBJS) $(FUZZZLIB_O)
+
+fuzz-libfuzzer: fuzz-seeds fuzz/fz_api
+	@echo "libFuzzer binary ready: ./fuzz/fz_api fuzz/seeds -jobs=4 -max_total_time=3600"
+
+clean-fuzz:
+	rm -rf fuzz/srclib fuzz/srclibz fuzz/obj fuzz/objz fuzz/libbt_fz.a \
+	       fuzz/mkseeds fuzz/fuzz_replay fuzz/fz_api
+
+.PHONY: fuzz fuzz-seeds fuzz-libfuzzer clean-fuzz fuzz/srclib fuzz/obj \
+        fuzz/srclibz fuzz/objz
