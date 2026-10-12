@@ -15,12 +15,20 @@
 #include <sys/stat.h>
 
 int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *zName);
+int btreeliteFuzzFileOneInput(const uint8_t *a, size_t n, const char *zName);
+
+/* The directory name picks the target: "fileseeds" = Target B (hostile
+** files, needs fuzz/files/ regenerated first), anything else = Target A. */
+static const char *zDirTag;
 
 static int runFile(const char *zPath, const char *zName, uint32_t *pnChk){
   FILE *f = fopen(zPath, "rb");
   uint8_t *a;
   size_t n, got;
   int rc;
+  int (*oneInput)(const uint8_t*, size_t, const char*) =
+      (zDirTag && strstr(zDirTag, "fileseeds")!=0)
+          ? btreeliteFuzzFileOneInput : btreeliteFuzzOneInput;
   if( f==0 ) return 1;
   fseek(f, 0, SEEK_END);
   n = (size_t)ftell(f);
@@ -38,6 +46,7 @@ static int runFile(const char *zPath, const char *zName, uint32_t *pnChk){
 
 static int runPath(const char *zPath, int *pnFile, uint32_t *pnChk){
   struct stat st;
+  zDirTag = zPath;
   if( stat(zPath, &st) ) return 1;
   if( S_ISDIR(st.st_mode) ){
     DIR *dp = opendir(zPath);

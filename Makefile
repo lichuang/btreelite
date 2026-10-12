@@ -165,23 +165,19 @@ fuzz/libbt_fz.a: $(FUZZSRCLIB_O)
 	/usr/bin/libtool -static -o $@ $(FUZZSRCLIB_O)
 
 FUZZ_HARNESS_OBJS = fuzz/obj/drv.o fuzz/obj/model.o fuzz/obj/target_api.o \
-                    fuzz/obj/mkseeds.o fuzz/obj/replay.o fuzz/obj/wrap.o
+                    fuzz/obj/mkseeds.o fuzz/obj/replay.o fuzz/obj/wrap.o \
+                    fuzz/obj/mkfiles.o fuzz/obj/target_file.o fuzz/obj/wrap_file.o
 $(FUZZ_HARNESS_OBJS): fuzz/obj/%.o: fuzz/%.c fuzz/obj
 	$(CC) $(FUZZ_SAN) -c $< -o $@
 
 fuzz/mkseeds: fuzz/obj/mkseeds.o fuzz/obj/drv.o
 	$(CC) $(FUZZ_SAN) -o $@ fuzz/obj/mkseeds.o fuzz/obj/drv.o
 
-fuzz/fuzz_replay: fuzz/obj/replay.o fuzz/obj/drv.o fuzz/obj/model.o \
-                 fuzz/obj/target_api.o fuzz/libbt_fz.a
-	$(CC) $(FUZZ_SAN) -o $@ fuzz/obj/replay.o fuzz/obj/drv.o \
-		fuzz/obj/model.o fuzz/obj/target_api.o fuzz/libbt_fz.a
-
 fuzz-seeds: fuzz/mkseeds
 	./fuzz/mkseeds
 
-fuzz: fuzz-seeds fuzz/fuzz_replay
-	./fuzz/fuzz_replay fuzz/seeds
+# The replay/fuzz/fuzz-libfuzzer targets live in the Target B section
+# below, so one `make fuzz` drives both corpora and both binaries.
 
 # libFuzzer binary: coverage instrumentation needs a second library build
 # with -fsanitize=fuzzer-no-link; the link adds -fsanitize=fuzzer itself.
@@ -192,23 +188,52 @@ FUZZZLIB_O = $(SOURCES:%.c=fuzz/srclibz/%.o)
 $(FUZZZLIB_O): fuzz/srclibz/%.o: src/%.c fuzz/srclibz
 	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer-no-link -c $< -o $@
 
-FUZZZ_OBJS = fuzz/objz/wrap.o fuzz/objz/drv.o fuzz/objz/model.o \
-             fuzz/objz/target_api.o
-$(FUZZZ_OBJS): fuzz/objz/%.o: fuzz/%.c fuzz/objz
+FUZZZ_A = fuzz/objz/wrap.o fuzz/objz/drv.o fuzz/objz/model.o \
+          fuzz/objz/target_api.o
+FUZZZ_ALL = fuzz/objz/wrap_file.o fuzz/objz/target_file.o $(FUZZZ_A)
+$(FUZZZ_ALL): fuzz/objz/%.o: fuzz/%.c fuzz/objz
 	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer-no-link -c $< -o $@
 
-# The libFuzzer link uses the raw objects: macOS libtool -static cannot
-# carry fuzzer instrumentation through an archive (ld64 reports
-# invalid r_symbolnum).
-fuzz/fz_api: $(FUZZZ_OBJS) $(FUZZZLIB_O)
-	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer -o $@ $(FUZZZ_OBJS) $(FUZZZLIB_O)
+# The libFuzzer links use raw objects (macOS libtool -static cannot carry
+# fuzzer instrumentation through an archive: ld64 reports
+# invalid r_symbolnum).  Each binary links its own wrap: two
+# LLVMFuzzerTestOneInput definitions cannot share a link.
+fuzz/fz_api: $(FUZZZ_A) $(FUZZZLIB_O)
+	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer -o $@ $(FUZZZ_A) $(FUZZZLIB_O)
 
-fuzz-libfuzzer: fuzz-seeds fuzz/fz_api
-	@echo "libFuzzer binary ready: ./fuzz/fz_api fuzz/seeds -jobs=4 -max_total_time=3600"
+fuzz/fz_file: $(FUZZZ_ALL) $(FUZZZLIB_O)
+	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer -o $@ \
+		$(filter-out fuzz/objz/wrap.o,$(FUZZZ_ALL)) $(FUZZZLIB_O)
+
+# ---- Target B: hostile-file fuzzing (fuzz/target_file.c) ---------------
+# Its bases (fuzz/files/) are regenerated per run; the mutation streams
+# (fuzz/fileseeds/) are checked in.
+fuzz/mkfiles: fuzz/obj/mkfiles.o fuzz/obj/drv.o fuzz/libbt_fz.a
+	$(CC) $(FUZZ_SAN) -o $@ fuzz/obj/mkfiles.o fuzz/obj/drv.o fuzz/libbt_fz.a
+
+fuzz-files: fuzz/mkfiles
+	./fuzz/mkfiles
+
+fuzz/fuzz_replay: fuzz/obj/replay.o fuzz/obj/drv.o fuzz/obj/model.o \
+                 fuzz/obj/target_api.o fuzz/obj/target_file.o fuzz/libbt_fz.a
+	$(CC) $(FUZZ_SAN) -o $@ fuzz/obj/replay.o fuzz/obj/drv.o \
+		fuzz/obj/model.o fuzz/obj/target_api.o fuzz/obj/target_file.o \
+		fuzz/libbt_fz.a
+
+fuzz: fuzz-seeds fuzz-files fuzz/fuzz_replay
+	./fuzz/fuzz_replay fuzz/seeds fuzz/fileseeds
+
+
+
+fuzz-libfuzzer: fuzz-seeds fuzz-files fuzz/fz_api fuzz/fz_file
+	@echo "libFuzzer binaries ready:"
+	@echo "  ./fuzz/fz_api  fuzz/seeds     -jobs=4 -max_total_time=3600"
+	@echo "  ./fuzz/fz_file fuzz/fileseeds -jobs=4 -max_total_time=3600"
 
 clean-fuzz:
 	rm -rf fuzz/srclib fuzz/srclibz fuzz/obj fuzz/objz fuzz/libbt_fz.a \
-	       fuzz/mkseeds fuzz/fuzz_replay fuzz/fz_api
+	       fuzz/mkseeds fuzz/mkfiles fuzz/fuzz_replay fuzz/fz_api \
+	       fuzz/fz_file fuzz/files fuzz/fileseeds
 
-.PHONY: fuzz fuzz-seeds fuzz-libfuzzer clean-fuzz fuzz/srclib fuzz/obj \
-        fuzz/srclibz fuzz/objz
+.PHONY: fuzz fuzz-seeds fuzz-files fuzz-libfuzzer clean-fuzz \
+        fuzz/srclib fuzz/obj fuzz/srclibz fuzz/objz

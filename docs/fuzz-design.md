@@ -425,6 +425,17 @@ Makefile（新增）:
 > ~4.2 万次/秒×4 干净（0 crash 0 leak）。注意：macOS 上 libFuzzer 与 UBSan
 > 不共链（运行时符号冲突），fuzzer 链接用 `fuzzer,address` 去掉 ubsan——
 > 这是 OSS-Fuzz 的标准 macOS 口径。
+>
+> **P2（Target B 敌意文件）已交付**：`fuzz/mkfiles.c`（确定性生成 7 类基础
+> trio —— empty/small/deep/bigval/freelist/walheavy/halfcommit；`make
+> fuzz-files` 现场再生，不入库）、11 个变异器（翻转/置位/截断/WAL 帧手术/
+> 校验和翻转/shm 踩踏/页拼接/指针改线/magic 擦除）、12 条检入变异流
+> （fuzz/fileseeds/）、`fuzz/target_file.c`（重开+受限走查+双 integrity
+> oracle）、`fuzz/wrap_file.c` + `fuzz/fz_file` libFuzzer 版。回放 36/36
+> 全绿（22k checks 中 B 占 ~370）；fz_file 四作业 90s ~87 万次/作业干净
+> （0 crash/0 leak）。B 的 oracle 口径（3.3 落地修正）：**rc 不设限**
+> ——损坏文件可让引擎从任何探针返回其错误族的任何成员（含 WAL 恢复失败
+> 的锁族码）；唯一违例 = 不返回（挂）、信号、或 sanitizer 报告。
 
 1. **mallocFailed 粘滞**（§4.2）——选 1（移植清除）或选 2（文档化僵尸态）。
    影响的是 Target C 的 oracle 与一处头文件契约；建议选 1，

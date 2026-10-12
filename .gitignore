@@ -10,7 +10,10 @@ fuzz/*.a
 fuzz/mkseeds
 fuzz/fuzz_replay
 fuzz/fz_api
+fuzz/fz_file
+fuzz/mkfiles
 fuzz/corpus*/
+fuzz/files/
 fuzz/crash-*
 fuzz/leak-*
 fuzz/timeout-*
