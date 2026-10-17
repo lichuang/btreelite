@@ -125,9 +125,14 @@ int sqlite3MemdebugNoType(const void*,u8);
 #endif
 
 #define LOOKASIDE_SMALL 128
-#define DisableLookaside  db->lookaside.bDisable++;db->lookaside.sz=0
-#define EnableLookaside   db->lookaside.bDisable++;\
+/* Same macros as btreeliteInt.h; guarded so TUs see one definition even
+** when both headers are in the include set (the macros ship in both to
+** keep the extracted sources unmodified). */
+#ifndef DisableLookaside
+# define DisableLookaside  db->lookaside.bDisable++;db->lookaside.sz=0
+# define EnableLookaside   db->lookaside.bDisable--;\
    db->lookaside.sz=db->lookaside.bDisable?0:db->lookaside.szTrue
+#endif
 
 /*
 ** main.c-level helpers the btree/pager sources call.  Phase 0 stubs

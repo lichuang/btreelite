@@ -11,6 +11,7 @@ fuzz/mkseeds
 fuzz/fuzz_replay
 fuzz/fz_api
 fuzz/fz_file
+fuzz/fz_e
 fuzz/mkfiles
 fuzz/corpus*/
 fuzz/files/
@@ -21,6 +22,10 @@ fuzz/oomit-*
 fuzz/min*
 fuzz/Slow-Unit-*
 fuzz/*.log
+
+# coverage build (make cov: instruments into cov/, profiles, report)
+cov/
+default.profraw
 
 # Prerequisites
 *.d

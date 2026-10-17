@@ -236,14 +236,77 @@ fuzz: fuzz-seeds fuzz-files fuzz/fuzz_replay
 
 fuzz-libfuzzer: fuzz-seeds fuzz-files fuzz/fz_api fuzz/fz_file fuzz/fz_e
 	@echo "libFuzzer binaries ready:"
-	@echo "  ./fuzz/fz_api  fuzz/seeds     -jobs=4 -max_total_time=3600"
-	@echo "  ./fuzz/fz_file fuzz/fileseeds -jobs=4 -max_total_time=3600"
-	@echo "  ./fuzz/fz_e    fuzz/eseeds    -jobs=4 -max_total_time=3600"
+	@echo "  ./fuzz/fz_api  fuzz/seeds     -jobs=4 -dict=fuzz/file.dict -max_total_time=3600"
+	@echo "  ./fuzz/fz_file fuzz/fileseeds -jobs=4 -dict=fuzz/file.dict -max_total_time=3600"
+	@echo "  ./fuzz/fz_e    fuzz/eseeds    -jobs=4 -dict=fuzz/file.dict -max_total_time=3600"
 
 clean-fuzz:
 	rm -rf fuzz/srclib fuzz/srclibz fuzz/obj fuzz/objz fuzz/libbt_fz.a \
 	       fuzz/mkseeds fuzz/mkfiles fuzz/fuzz_replay fuzz/fz_api \
 	       fuzz/fz_file fuzz/fz_e fuzz/files fuzz/fileseeds fuzz/eseeds
 
-.PHONY: fuzz fuzz-seeds fuzz-files fuzz-libfuzzer clean-fuzz \
+# ---- Coverage report (docs/fuzz-design.md 9) ---------------------------
+# cov        build coverage-instrumented engine archive, the nine test
+#            binaries and the fuzz replay runner, run them all under
+#            LLVM_PROFILE_FILE, merge the profiles and write a per-file,
+#            per-function report to fuzz/coverage.txt.
+# The engine sources are instrumented into cov/srcco/ and archived; the
+# suites link against that archive so every translation unit lands in the
+# mapping.  libtool -static is safe here (no fuzzer instrumentation).
+COV_SAN = -Isrc -Iinclude -I. -O1 -g -Wall -Wno-unused-parameter \
+          -Wno-deprecated-declarations \
+          -fprofile-instr-generate -fcoverage-mapping
+LLVMDIR = /opt/homebrew/opt/llvm@22/bin/
+
+cov/srcco:
+	mkdir -p cov/srcco cov/prof
+
+COVSRCLIB_O = $(SOURCES:%.c=cov/srcco/%.o)
+$(COVSRCLIB_O): cov/srcco/%.o: src/%.c cov/srcco
+	$(CC) $(COV_SAN) -c $< -o $@
+
+cov/libbt_cov.a: $(COVSRCLIB_O)
+	/usr/bin/libtool -static -o $@ $(COVSRCLIB_O)
+
+COVTESTBINS = cov/t_smoke cov/t_kv cov/t_big cov/t_wal cov/t_api \
+              cov/t_proc cov/t_dur cov/t_trees cov/t_savepos
+$(COVTESTBINS): cov/%: test/%.c cov/libbt_cov.a
+	$(CC) $(COV_SAN) -o $@ $< cov/libbt_cov.a
+
+cov/objs:
+	mkdir -p cov/objs
+
+COVHARNESS_O = fuzz/replay.c fuzz/drv.c fuzz/model.c fuzz/target_api.c \
+               fuzz/target_file.c fuzz/target_e.c
+cov/cov_replay: $(COVHARNESS_O) cov/libbt_cov.a cov/objs
+	$(CC) $(COV_SAN) -Isrc -o $@ \
+		fuzz/replay.c fuzz/drv.c fuzz/model.c fuzz/target_api.c \
+		fuzz/target_file.c fuzz/target_e.c cov/libbt_cov.a
+
+cov: fuzz-files cov/libbt_cov.a $(COVTESTBINS) cov/cov_replay
+	rm -rf cov/prof cov/coverage.txt
+	mkdir -p cov/prof
+	cd test && LLVM_PROFILE_FILE=../cov/prof/t_smoke.profraw ../cov/t_smoke >/dev/null \
+	 && LLVM_PROFILE_FILE=../cov/prof/t_kv.profraw ../cov/t_kv >/dev/null \
+	 && LLVM_PROFILE_FILE=../cov/prof/t_big.profraw ../cov/t_big >/dev/null \
+	 && LLVM_PROFILE_FILE=../cov/prof/t_wal.profraw ../cov/t_wal >/dev/null \
+	 && LLVM_PROFILE_FILE=../cov/prof/t_api.profraw ../cov/t_api >/dev/null \
+	 && LLVM_PROFILE_FILE=../cov/prof/t_proc.profraw ../cov/t_proc >/dev/null \
+	 && LLVM_PROFILE_FILE=../cov/prof/t_dur.profraw ../cov/t_dur >/dev/null \
+	 && LLVM_PROFILE_FILE=../cov/prof/t_trees.profraw ../cov/t_trees >/dev/null \
+	 && LLVM_PROFILE_FILE=../cov/prof/t_savepos.profraw ../cov/t_savepos >/dev/null
+	LLVM_PROFILE_FILE=cov/prof/replay.profraw cov/cov_replay \
+		fuzz/seeds fuzz/fileseeds fuzz/eseeds >/dev/null
+	$(LLVMDIR)llvm-profdata merge -sparse cov/prof/*.profraw -o cov/all.profdata
+	@$(LLVMDIR)llvm-cov report -instr-profile=cov/all.profdata cov/cov_replay \
+		-object cov/t_smoke -object cov/t_kv -object cov/t_big \
+		-object cov/t_wal -object cov/t_api -object cov/t_proc \
+		-object cov/t_dur -object cov/t_trees -object cov/t_savepos \
+		$(SOURCES:%=src/% fuzz/target_api.c fuzz/target_file.c \
+		fuzz/target_e.c fuzz/replay.c) > cov/coverage.txt
+	@echo "coverage report written to cov/coverage.txt"
+
+
+.PHONY: fuzz fuzz-seeds fuzz-files fuzz-libfuzzer clean-fuzz cov \
         fuzz/srclib fuzz/obj fuzz/srclibz fuzz/objz
+.PHONY: cov/srcco cov/objs

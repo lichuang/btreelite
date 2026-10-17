@@ -761,7 +761,7 @@ struct Lookaside {
 };
 #define LOOKASIDE_SMALL 128
 #define DisableLookaside  db->lookaside.bDisable++;db->lookaside.sz=0
-#define EnableLookaside   db->lookaside.bDisable++;\
+#define EnableLookaside   db->lookaside.bDisable--;\
    db->lookaside.sz=db->lookaside.bDisable?0:db->lookaside.szTrue
 
 /*

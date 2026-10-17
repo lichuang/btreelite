@@ -29,9 +29,9 @@ static int runFile(const char *zPath, const char *zName, uint32_t *pnChk){
   size_t n, got;
   int rc;
   int (*oneInput)(const uint8_t*, size_t, const char*) =
-      (zDirTag && strstr(zDirTag, "eseeds")!=0) ? btreeliteFuzzEOneInput :
-      (zDirTag && strstr(zDirTag, "fileseeds")!=0)
-          ? btreeliteFuzzFileOneInput : btreeliteFuzzOneInput;
+      (zDirTag && strstr(zDirTag, "fileseeds")!=0) ? btreeliteFuzzFileOneInput
+      : (zDirTag && strstr(zDirTag, "eseeds")!=0) ? btreeliteFuzzEOneInput
+      : btreeliteFuzzOneInput;
   if( f==0 ) return 1;
   fseek(f, 0, SEEK_END);
   n = (size_t)ftell(f);
@@ -41,7 +41,7 @@ static int runFile(const char *zPath, const char *zName, uint32_t *pnChk){
   got = fread(a, 1, n, f);
   fclose(f);
   if( got!=n ){ free(a); return 1; }
-  rc = btreeliteFuzzOneInput(a, got, zName);
+  rc = oneInput(a, got, zName);
   *pnChk += (uint32_t)(rc < 0 ? 0 : rc);
   free(a);
   return 0;

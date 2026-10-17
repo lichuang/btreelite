@@ -380,7 +380,31 @@ Makefile（新增）:
 
 ## 9. 覆盖率与推进计划
 
-**测量**：`-fsanitize-coverage=edge,indirect-calls` + `%SANITIZER_COV` 报告，
+**测量已落地**：`make cov` —— 引擎与 9 个套件及回放 runner 全部以
+`-fprofile-instr-generate -fcoverage-mapping` 编译（cov/srcco/、cov/ 目录），
+跑完全部矩阵后 `llvm-profdata merge` + `llvm-cov report`（多 -object 汇总）
+产生函数级报告，落在 `cov/coverage.txt`。注意多二进制汇总的 TOTAL 行含
+同一源跨二进制的重复计数，**引用请用每文件的"Cover"列**，勿用 TOTAL。
+
+**覆盖率基线**（提交 1d94318，引擎核心行覆盖）：
+
+| 文件 | Regions | 行 | 分支 |
+|---|---|---|---|
+| src/btree.c | 4295 | 75.68% | 60.70% |
+| src/btreelite_api.c | 611 | 94.14% | 66.56% |
+| src/pager.c | 2587 | 69.27% | 47.76% |
+| src/wal.c | 1571 | 74.59% | 53.68% |
+| src/pcache1.c | 436 | 80.26% | 64.12% |
+| src/pcache.c | 316 | 79.66% | 60.00% |
+| src/memjournal.c | 157 | 67.20% | 48.65% |
+| src/os.c | 160 | 69.63% | 44.83% |
+| src/os_unix.c（VFS 未用路径多） | 3153 | 43.41% | 30.23% |
+
+fuzz harness 自身：target_api 87.17%、target_e 87.17%、target_file 79.92%
+（行）。未覆盖集中处 = S5（溢出链 balance/deFreeList 深支）、S8/S9（shm
+多页与 checkpoint 子类型）、S6（深保存点交错）、S12（OOM 尚未建）。
+
+**测量（历史设计稿）**：`-fsanitize-coverage=edge,indirect-calls` + `%SANITIZER_COV` 报告，
 聚焦函数白名单（§1 S1–S10 全部函数名）。基线：当前 t_* 体系对 KV 主路径覆盖已高
 ——fuzz 的边际价值集中在 S5（溢出链）、S8/S9（WAL/shm）、S6（保存点栈）、S12（OOM）。
 

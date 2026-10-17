@@ -50,6 +50,26 @@ struct btreelite_cur {
 ** frames to the WAL.  Defined below; invoked by commit/rollback below. */
 static void btreeliteWalCallback(btreelite_db *p);
 
+/*
+** btreelite's port of upstream sqlite3ApiExit(): every public API exit
+** that carries a result code passes through here.  If the connection's
+** sticky mallocFailed flag is set (sqlite3OomFault() set it when a
+** connection-attached allocation failed and disabled lookaside as a
+** result), the flag is cleared -- the call reports BTREELITE_NOMEM and
+** the next call starts from a working allocator.  btreelite's own
+** result-code space exceeds the 8-bit error mask (BTREELITE_BUSY_SNAPSHOT
+** is 517, BTREELITE_DONE is 101), so upstream's errMask folding is not
+** ported; this exit only decides between "the sticky flag says this call
+** must report NOMEM" and "return whatever the layer produced".
+*/
+static int apiExit(btreelite_db *p, int rc){
+  if( p!=0 && p->env.mallocFailed ){
+    sqlite3OomClear(&p->env);
+    return BTREELITE_NOMEM;
+  }
+  return rc;
+}
+
 void btreelite_free(void *p){ sqlite3_free(p); }
 
 /*
@@ -152,7 +172,7 @@ int btreelite_create_tree(btreelite_db *p, unsigned *piRoot){
   if( rc!=BTREELITE_OK ) return rc;
   rc = sqlite3BtreeCreateTable(p->pBt, &iRoot, BTREE_BLOBKEY);
   if( rc==SQLITE_OK && piRoot ) *piRoot = (unsigned)iRoot;
-  return rc;
+  return apiExit(p, rc);
 }
 
 int btreelite_clear_tree(btreelite_db *p, unsigned iRoot){
@@ -181,21 +201,21 @@ int btreelite_begin(btreelite_db *p, int wrflag){
     /* A nested write-begin opens one more savepoint. */
     p->env.nSavepoint++;
   }
-  return rc;
+  return apiExit(p, rc);
 }
 int btreelite_commit(btreelite_db *p){
   int rc;
   if( p==0 ) return BTREELITE_ERROR;
   rc = sqlite3BtreeCommit(p->pBt);
   if( rc==SQLITE_OK ){ p->env.nSavepoint = 0; btreeliteWalCallback(p); }
-  return rc;
+  return apiExit(p, rc);
 }
 int btreelite_rollback(btreelite_db *p){
   int rc;
   if( p==0 ) return BTREELITE_ERROR;
   rc = sqlite3BtreeRollback(p->pBt, SQLITE_OK, 0);
   if( rc==SQLITE_OK ){ p->env.nSavepoint = 0; btreeliteWalCallback(p); }
-  return rc;
+  return apiExit(p, rc);
 }
 int btreelite_txn_state(btreelite_db *p){
   if( p==0 ) return 0;
@@ -227,7 +247,7 @@ int btreelite_savepoint(btreelite_db *p, int op, int iSavepoint){
     ** playback that keeps the write transaction open. */
     rc = sqlite3BtreeSavepoint(p->pBt, SAVEPOINT_ROLLBACK, -1);
     if( rc==SQLITE_OK ) p->env.nSavepoint = 1;
-    return rc;
+  return apiExit(p, rc);
   }
   /* Pager savepoints are absolute indices counted from the outermost one:
   ** the first nested btreelite_begin() opened pager savepoint 0, the
@@ -247,7 +267,7 @@ int btreelite_savepoint(btreelite_db *p, int op, int iSavepoint){
     p->env.nSavepoint = op==BTREELITE_SAVEPOINT_RELEASE ? iSavepoint
                                                        : iSavepoint+1;
   }
-  return rc;
+  return apiExit(p, rc);
 }
 
 /* ---------------------------------------------------------------- */
@@ -280,9 +300,21 @@ int btreelite_cursor_open(btreelite_db *p, unsigned iRoot, int wrFlag,
   rc = sqlite3BtreeCursor(p->pBt, (Pgno)iRoot,
                           wrFlag ? BTREE_WRCSR : 0, 0, c->pCur);
   if( rc!=SQLITE_OK ){
+    /* Unlink from the handle's list FIRST: cursor_open already appended
+    ** this cursor at L293-294 above, and freeing it without unlinking
+    ** left p->pCurs pointing at freed memory -- the close-time sweep
+    ** (btreelite_close walks the list) then used it after free, which
+    ** ASan reports as heap-use-after-free at btreelite_cursor_close.
+    ** Found by the deterministic OOM probe (fault attempt #3 kills the
+    ** sqlite3BtreeCursor allocation exactly once). */
+    {
+      btreelite_cur **pp = &p->pCurs;
+      while( *pp && *pp!=c ) pp = &(*pp)->pNext;
+      if( *pp ) *pp = c->pNext;
+    }
     sqlite3_free(c->pCur);
     sqlite3_free(c);
-    return rc;
+    return apiExit(p, rc);
   }
   *ppCur = c;
   return BTREELITE_OK;
@@ -328,20 +360,22 @@ int btreelite_put(btreelite_cur *c, const void *k, int nK,
   ** in an arbitrary state after a balance, and "cursor at the stored
   ** entry" is the contract the value accessors rely on. */
   rc = kvMoveto(c, k, nK, &loc);
-  return rc;
+  return apiExit(c->pDb, rc);
 }
 
 int btreelite_get(btreelite_cur *c, const void *k, int nK){
   int rc, res = 0;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
   rc = kvMoveto(c, k, nK, &res);
-  if( rc!=SQLITE_OK ) return rc;
+  if( rc!=SQLITE_OK ) return apiExit(c->pDb, rc);
   return res==0 ? BTREELITE_OK : BTREELITE_NOTFOUND;
 }
 
 int btreelite_checkpoint(btreelite_db *p, int eMode, int *pnLog, int *pnCkpt){
+  int rc;
   if( p==0 ) return BTREELITE_ERROR;
-  return sqlite3BtreeCheckpoint(p->pBt, eMode, pnLog, pnCkpt);
+  rc = sqlite3BtreeCheckpoint(p->pBt, eMode, pnLog, pnCkpt);
+  return apiExit(p, rc);
 }
 
 /*
@@ -498,21 +532,22 @@ int btreelite_del(btreelite_cur *c, const void *k, int nK){
   rc = kvCheckWriteCur(c);
   if( rc!=BTREELITE_OK ) return rc;
   rc = kvMoveto(c, k, nK, &res);
-  if( rc!=SQLITE_OK ) return rc;
+  if( rc!=SQLITE_OK ) return apiExit(c->pDb, rc);
   if( res!=0 ) return BTREELITE_NOTFOUND;
-  return sqlite3BtreeDelete(c->pCur, 0);
+  rc = sqlite3BtreeDelete(c->pCur, 0);
+  return apiExit(c->pDb, rc);
 }
 
 int btreelite_seek(btreelite_cur *c, const void *k, int nK){
   int rc, res = 0;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
   rc = kvMoveto(c, k, nK, &res);
-  if( rc!=SQLITE_OK ) return rc;
+  if( rc!=SQLITE_OK ) return apiExit(c->pDb, rc);
   if( res<0 ){
     /* Parked before the key: step to the first entry >= key. */
     rc = sqlite3BtreeNext(c->pCur, 0);
     if( rc==SQLITE_DONE ) return BTREELITE_OK;
-    if( rc!=SQLITE_OK ) return rc;
+    if( rc!=SQLITE_OK ) return apiExit(c->pDb, rc);
   }
   return BTREELITE_OK;
 }
@@ -523,27 +558,33 @@ int btreelite_eof(btreelite_cur *c){
 }
 
 int btreelite_first(btreelite_cur *c, int *pRes){
+  int rc;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
-  return sqlite3BtreeFirst(c->pCur, pRes);
+  rc = sqlite3BtreeFirst(c->pCur, pRes);
+  return apiExit(c->pDb, rc);
 }
 
 int btreelite_last(btreelite_cur *c, int *pRes){
+  int rc;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
-  return sqlite3BtreeLast(c->pCur, pRes);
+  rc = sqlite3BtreeLast(c->pCur, pRes);
+  return apiExit(c->pDb, rc);
 }
 
 int btreelite_next(btreelite_cur *c){
   int rc;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
   rc = sqlite3BtreeNext(c->pCur, 0);
-  return rc==SQLITE_DONE ? BTREELITE_DONE : rc;
+  if( rc==SQLITE_DONE ) return BTREELITE_DONE;
+  return apiExit(c->pDb, rc);
 }
 
 int btreelite_prev(btreelite_cur *c){
   int rc;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
   rc = sqlite3BtreePrevious(c->pCur, 0);
-  return rc==SQLITE_DONE ? BTREELITE_DONE : rc;
+  if( rc==SQLITE_DONE ) return BTREELITE_DONE;
+  return apiExit(c->pDb, rc);
 }
 
 /* ---------------------------------------------------------------- */
@@ -575,9 +616,11 @@ int btreelite_value_size(btreelite_cur *c, uint32_t *pnVal){
 
 int btreelite_value_read(btreelite_cur *c, uint32_t offset, uint32_t amt,
                          void *pBuf){
+  int rc;
   if( c==0 || c->pCur==0 ) return BTREELITE_ERROR;
   if( sqlite3BtreeEof(c->pCur) ) return BTREELITE_ERROR;
-  return sqlite3BtreeKvValueRead(c->pCur, offset, amt, pBuf);
+  rc = sqlite3BtreeKvValueRead(c->pCur, offset, amt, pBuf);
+  return apiExit(c->pDb, rc);
 }
 
 const void *btreelite_value_fetch(btreelite_cur *c, int *pAmt){
@@ -605,7 +648,7 @@ int btreelite_value_write(btreelite_cur *c, const void *k, int nK,
   rc = kvCheckWriteCur(c);
   if( rc!=BTREELITE_OK ) return rc;
   rc = kvMoveto(c, k, nK, &res);
-  if( rc!=SQLITE_OK ) return rc;
+  if( rc!=SQLITE_OK ) return apiExit(c->pDb, rc);
   if( res!=0 || sqlite3BtreeEof(c->pCur) ) return BTREELITE_NOTFOUND;
   rc = btreelite_value_size(c, &nVal);
   if( rc!=BTREELITE_OK ) return rc;
@@ -614,7 +657,8 @@ int btreelite_value_write(btreelite_cur *c, const void *k, int nK,
     return BTREELITE_ERROR;
   }
   sqlite3BtreeIncrblobCursor(c->pCur);
-  return sqlite3BtreePutData(c->pCur, offset, amt, (void*)z);
+  rc = sqlite3BtreePutData(c->pCur, offset, amt, (void*)z);
+  return apiExit(c->pDb, rc);
 }
 /*
 ** Run the btree integrity checker over the tree rooted at iRoot, or over
@@ -666,7 +710,7 @@ int btreelite_integrity_check(btreelite_db *p, unsigned iRoot, int mxErr,
                       nRoot, mxErr, pnErr, pzOut);
   if( rc!=SQLITE_OK && *pzOut ){ btreelite_free(*pzOut); *pzOut = 0; }
   if( bOwnTxn ) btreelite_commit(p);
-  return rc;
+  return apiExit(p, rc);
 }
 
 /*

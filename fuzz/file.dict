@@ -1,0 +1,83 @@
+# fuzz/file.dict -- libFuzzer dictionary for the btreelite hostile-file
+# target, per docs/fuzz-design.md 3.2: file magic, page-type values,
+# varint boundary encodings, WAL header/frame magic, index-header fields.
+# One dict serves fz_file (mutation streams) directly; the opcode and
+# value tokens also fit the fz_api/fz_e op-stream inputs since all three
+# runners decode raw bytes with fuzz/drv.c in the same style.
+#
+# ---- stream opcodes (fuzz/drv.c: byte b -> op ((b-1)%26)+1) ----------
+"\x01"
+"\x02"
+"\x03"
+"\x04"
+"\x05"
+"\x06"
+"\x07"
+"\x08"
+"\x09"
+"\x0a"
+"\x0b"
+"\x0c"
+"\x0d"
+"\x0e"
+"\x0f"
+"\x10"
+"\x11"
+"\x12"
+"\x13"
+"\x14"
+"\x15"
+"\x16"
+"\x17"
+"\x18"
+"\x19"
+"\x1a"
+"\x00"
+# ---- database file magic (src/btree.c zMagicHeader + NUL) -----------
+"btreelite fmt 1"
+"btreeli"
+"\x00"
+# ---- page-type bytes (table/interior-table/index/interior-index) ----
+"\x02"
+"\x05"
+"\x0a"
+"\x0d"
+# ---- header bytes 18/19: file format versions 1 and 2 ---------------
+"\x01"
+"\x02"
+# ---- payload fractions page1[21..23]: 64, 32, 32 --------------------
+"\x40"
+"\x20"
+"\x20\x20\x40"
+# ---- page size (bytes 16-17, big byte first: 4096/1024/65536=1) -----
+"\x10\x00"
+"\x04\x00"
+"\x00\x01"
+# ---- varint boundaries (cell key lengths) ---------------------------
+"\x7f"
+"\x80"
+"\x81"
+"\xff"
+"\xff\xff"
+# ---- WAL file header: magic big-endian (src/wal.c) ------------------
+"\x37\x7f\x06\x82"
+"\x37\x7f\x06\x83"
+"\x37\x7f"
+"\x06\x82"
+"\x06\x83"
+# ---- WAL header: format version 3007000 big-endian ------------------
+"\x00\x2d\xe2\x18"
+"\x2d\xe2\x18"
+"\xe2\x18"
+# ---- WAL header: page-size word, checkpoint sequence ----------------
+"\x00\x00\x10\x00"
+"\x00\x00\x00\x01"
+"\x00\x00\x00\x02"
+"\x00\x00\x00\x03"
+# ---- wal-index header fields (isInit/bigEndCksum/version) -----------
+"\x01\x01"
+"\x01\x00"
+"\x02"
+# ---- plausible root page numbers (one byte fits both streams) -------
+"\x02"
+"\x03"
