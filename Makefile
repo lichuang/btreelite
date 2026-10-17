@@ -166,7 +166,8 @@ fuzz/libbt_fz.a: $(FUZZSRCLIB_O)
 
 FUZZ_HARNESS_OBJS = fuzz/obj/drv.o fuzz/obj/model.o fuzz/obj/target_api.o \
                     fuzz/obj/mkseeds.o fuzz/obj/replay.o fuzz/obj/wrap.o \
-                    fuzz/obj/mkfiles.o fuzz/obj/target_file.o fuzz/obj/wrap_file.o
+                    fuzz/obj/mkfiles.o fuzz/obj/target_file.o fuzz/obj/wrap_file.o \
+                    fuzz/obj/target_e.o fuzz/obj/wrap_e.o
 $(FUZZ_HARNESS_OBJS): fuzz/obj/%.o: fuzz/%.c fuzz/obj
 	$(CC) $(FUZZ_SAN) -c $< -o $@
 
@@ -190,7 +191,8 @@ $(FUZZZLIB_O): fuzz/srclibz/%.o: src/%.c fuzz/srclibz
 
 FUZZZ_A = fuzz/objz/wrap.o fuzz/objz/drv.o fuzz/objz/model.o \
           fuzz/objz/target_api.o
-FUZZZ_ALL = fuzz/objz/wrap_file.o fuzz/objz/target_file.o $(FUZZZ_A)
+FUZZZ_E = fuzz/objz/wrap_e.o fuzz/objz/target_e.o
+FUZZZ_ALL = fuzz/objz/wrap_file.o fuzz/objz/target_file.o $(FUZZZ_E) $(FUZZZ_A)
 $(FUZZZ_ALL): fuzz/objz/%.o: fuzz/%.c fuzz/objz
 	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer-no-link -c $< -o $@
 
@@ -203,7 +205,13 @@ fuzz/fz_api: $(FUZZZ_A) $(FUZZZLIB_O)
 
 fuzz/fz_file: $(FUZZZ_ALL) $(FUZZZLIB_O)
 	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer -o $@ \
-		$(filter-out fuzz/objz/wrap.o,$(FUZZZ_ALL)) $(FUZZZLIB_O)
+		$(filter-out fuzz/objz/wrap.o fuzz/objz/wrap_e.o,$(FUZZZ_ALL)) \
+		$(FUZZZLIB_O)
+
+fuzz/fz_e: $(FUZZZ_ALL) $(FUZZZLIB_O)
+	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer -o $@ \
+		$(filter-out fuzz/objz/wrap.o fuzz/objz/wrap_file.o,$(FUZZZ_ALL)) \
+		$(FUZZZLIB_O)
 
 # ---- Target B: hostile-file fuzzing (fuzz/target_file.c) ---------------
 # Its bases (fuzz/files/) are regenerated per run; the mutation streams
@@ -215,25 +223,27 @@ fuzz-files: fuzz/mkfiles
 	./fuzz/mkfiles
 
 fuzz/fuzz_replay: fuzz/obj/replay.o fuzz/obj/drv.o fuzz/obj/model.o \
-                 fuzz/obj/target_api.o fuzz/obj/target_file.o fuzz/libbt_fz.a
+                 fuzz/obj/target_api.o fuzz/obj/target_file.o \
+                 fuzz/obj/target_e.o fuzz/libbt_fz.a
 	$(CC) $(FUZZ_SAN) -o $@ fuzz/obj/replay.o fuzz/obj/drv.o \
 		fuzz/obj/model.o fuzz/obj/target_api.o fuzz/obj/target_file.o \
-		fuzz/libbt_fz.a
+		fuzz/obj/target_e.o fuzz/libbt_fz.a
 
 fuzz: fuzz-seeds fuzz-files fuzz/fuzz_replay
-	./fuzz/fuzz_replay fuzz/seeds fuzz/fileseeds
+	./fuzz/fuzz_replay fuzz/seeds fuzz/fileseeds fuzz/eseeds
 
 
 
-fuzz-libfuzzer: fuzz-seeds fuzz-files fuzz/fz_api fuzz/fz_file
+fuzz-libfuzzer: fuzz-seeds fuzz-files fuzz/fz_api fuzz/fz_file fuzz/fz_e
 	@echo "libFuzzer binaries ready:"
 	@echo "  ./fuzz/fz_api  fuzz/seeds     -jobs=4 -max_total_time=3600"
 	@echo "  ./fuzz/fz_file fuzz/fileseeds -jobs=4 -max_total_time=3600"
+	@echo "  ./fuzz/fz_e    fuzz/eseeds    -jobs=4 -max_total_time=3600"
 
 clean-fuzz:
 	rm -rf fuzz/srclib fuzz/srclibz fuzz/obj fuzz/objz fuzz/libbt_fz.a \
 	       fuzz/mkseeds fuzz/mkfiles fuzz/fuzz_replay fuzz/fz_api \
-	       fuzz/fz_file fuzz/files fuzz/fileseeds
+	       fuzz/fz_file fuzz/fz_e fuzz/files fuzz/fileseeds fuzz/eseeds
 
 .PHONY: fuzz fuzz-seeds fuzz-files fuzz-libfuzzer clean-fuzz \
         fuzz/srclib fuzz/obj fuzz/srclibz fuzz/objz

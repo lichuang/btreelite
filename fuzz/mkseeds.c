@@ -377,6 +377,88 @@ int main(void){
   commitT(0);
   flush("s27-memfile-mixed");
 
+  { /* ---- Target E seeds (fuzz/eseeds/) -------------------------- */
+    static uint8_t ebuf[1<<16];
+    static size_t en;
+    void (*ew)(const char*) = 0;
+    (void)ew;
+    en = 0;
+    /* emitter: same style, but into fuzz/eseeds/ */
+    #define eseedFlush(nm) do{ \
+      char ep[256]; FILE *ef; \
+      snprintf(ep, sizeof ep, "fuzz/eseeds/%s.bin", nm); \
+      ef = fopen(ep, "wb"); \
+      if( ef==0 ){ fprintf(stderr, "mkseeds: cannot write %s\n", ep); exit(1); } \
+      fwrite(ebuf, 1, en, ef); fclose(ef); en = 0; }while(0)
+    #define exx(o) ebuf[en++] = (uint8_t)(o)
+    mkdir("fuzz/eseeds", 0777);
+
+    /* e01: pure writer+reader alternating, no contention */
+    { uint64_t seed = 0xe001000000000001ULL, i2;
+      for(i2=0;i2<8;i2++) ebuf[en++] = (uint8_t)(seed>>(8*i2));
+      for(i2=0;i2<24;i2++){ exx(1); exx(1); exx(2); exx(30);   /* begin+put */
+        if( i2%3==0 ){ exx(4); }                               /* wcommit */
+      }
+      exx(4); }
+    eseedFlush("e01-light");
+
+    /* e02: writer holds, reader reads during the write txn */
+    { uint64_t seed = 0xe002000000000002ULL, i2;
+      for(i2=0;i2<8;i2++) ebuf[en++] = (uint8_t)(seed>>(8*i2));
+      exx(1); exx(1);                                          /* wbegin */
+      for(i2=0;i2<8;i2++){
+        exx(2); exx(30);                                       /* wput */
+        exx(6);                                                /* rbegin */
+        for(int j2=0;j2<4;j2++){ exx(7); exx(0); exx((int)(i2*8+j2)); }  /* rget w-keys */
+        exx(8);                                                /* rcommit */
+      }
+      exx(4); }                                                /* wcommit */
+    eseedFlush("e02-read-during-write");
+
+    /* e03: writer holds, handle-2 write bundles are contended -> BUSY */
+    { uint64_t seed = 0xe003000000000003ULL, i2;
+      for(i2=0;i2<8;i2++) ebuf[en++] = (uint8_t)(seed>>(8*i2));
+      exx(1); exx(1);
+      for(i2=0;i2<12;i2++){ exx(2); exx(30); exx(9); exx(20); }  /* wput+sput(BUSY) */
+      exx(4); }
+    eseedFlush("e03-sput-contended");
+
+    /* e04: writer free, then handle-2 bundles commit between */
+    { uint64_t seed = 0xe004000000000004ULL, i2;
+      for(i2=0;i2<8;i2++) ebuf[en++] = (uint8_t)(seed>>(8*i2));
+      for(i2=0;i2<10;i2++){
+        exx(1); exx(1); exx(2); exx(30); exx(4);                 /* one writer write */
+        exx(9); exx(25);                                         /* one sput commit */
+      }
+      exx(4); }
+    eseedFlush("e04-alternate-writers");
+
+    /* e05: checkpoints of every mode between commit pairs */
+    { uint64_t seed = 0xe005000000000005ULL, i2;
+      for(i2=0;i2<8;i2++) ebuf[en++] = (uint8_t)(seed>>(8*i2));
+      for(i2=0;i2<8;i2++){
+        exx(1); exx(1); exx(2); exx(30); exx(4);
+        exx(10); exx((int)(i2%4));                               /* ckpt mode i2%4 */
+      }
+      exx(4); }
+    eseedFlush("e05-ckpt-modes");
+
+    /* e06: chaos: all ops, fixed mix */
+    { uint64_t seed = 0xe006000000000006ULL, i2;
+      for(i2=0;i2<8;i2++) ebuf[en++] = (uint8_t)(seed>>(8*i2));
+      for(i2=0;i2<150;i2++){
+        int m = (int)((i2*7)%10)+1;
+        exx(m);
+        if( m==1 ) exx(1);
+        if( m==2 || m==9 ) exx((int)((i2*13)%48));
+        if( m==3 ) exx((int)(i2%100));
+        if( m==7 ){ exx(m%2); exx((int)(i2%50)); }
+        if( m==10 ) exx((int)(i2%4));
+      }
+      exx(4); }
+    eseedFlush("e06-chaos");
+  }
+
   printf("mkseeds: seeds written to fuzz/seeds/\n");
   return 0;
 }

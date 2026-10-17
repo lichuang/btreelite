@@ -16,9 +16,11 @@
 
 int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *zName);
 int btreeliteFuzzFileOneInput(const uint8_t *a, size_t n, const char *zName);
+int btreeliteFuzzEOneInput(const uint8_t *a, size_t n, const char *zName);
 
 /* The directory name picks the target: "fileseeds" = Target B (hostile
-** files, needs fuzz/files/ regenerated first), anything else = Target A. */
+** files, needs fuzz/files/ regenerated first), "eseeds" = Target E
+** (contention), anything else = Target A. */
 static const char *zDirTag;
 
 static int runFile(const char *zPath, const char *zName, uint32_t *pnChk){
@@ -27,6 +29,7 @@ static int runFile(const char *zPath, const char *zName, uint32_t *pnChk){
   size_t n, got;
   int rc;
   int (*oneInput)(const uint8_t*, size_t, const char*) =
+      (zDirTag && strstr(zDirTag, "eseeds")!=0) ? btreeliteFuzzEOneInput :
       (zDirTag && strstr(zDirTag, "fileseeds")!=0)
           ? btreeliteFuzzFileOneInput : btreeliteFuzzOneInput;
   if( f==0 ) return 1;

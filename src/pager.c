@@ -1994,6 +1994,21 @@ static int pager_end_transaction(Pager *pPager, int hasSuper, int bCommit){
     */
     rc2 = sqlite3WalEndWriteTransaction(pPager->pWal);
     assert( rc2==SQLITE_OK );
+    /* btreelite: drop this connection's WAL read transaction with it.
+    ** Upstream ends a WAL read transaction only when the pager goes
+    ** fully idle (pager_unlock), which its SQL statement boundaries
+    ** reach after every autocommit statement.  A btreelite handle has no
+    ** statement boundaries: the reader would otherwise stay parked on a
+    ** read-mark slot across commits and journal-mode changes, and the
+    ** next checkpoint backfills past the stale mark only by taking that
+    ** slot's locks exclusively -- from the very connection holding them
+    ** (in-process locks are tracked per connection), which deadlocks on
+    ** itself.  With no reader of its own, the next pagerSharedLock()
+    ** begins a fresh read transaction against the current WAL header
+    ** (page count included), so every later BEGIN sees a fully refreshed
+    ** pager state. */
+    sqlite3WalEndReadTransaction(pPager->pWal);
+    pPager->eState = PAGER_OPEN;
   }else if( rc==SQLITE_OK && bCommit && pPager->dbFileSize>pPager->dbSize ){
     /* This branch is taken when committing a transaction in rollback-journal
     ** mode if the database file on disk is larger than the database image.

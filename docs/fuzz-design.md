@@ -453,6 +453,19 @@ Makefile（新增）:
 > 流、23062 checks）。注意 btreelite.h 尚未映射 SQLITE_NOTADB(26)/
 > SQLITE_SCHEMA(17) 等错误码，此问题暴露时应用无从解读返回值。
 >
+>
+> **P1 的 Target E（争用 fuzzer）已交付**：`fuzz/target_e.c` —— 同进程
+> 双句柄同文件（WAL 锁真实协调），十类动作（写事务/单向键写/删/提交/回滚、
+> 读快照事务/快照点查、句柄 2 的打包写争用（begin 被写者 BUSY 即整包取消）、
+> 四模式 checkpoint），ledger 回放模型 + WAL 快照语义比对 + 终局重开全量
+> 核验 + per-root integrity_check。争用族错误码（BUSY/LOCKED/BUSY_SNAPSHOT）
+> 合法且不改模型；读事务中跨连接升级（read→write upgrade）会终止打开的
+> 读事务，模型同步失效快照。种子 e01-e06（fuzz/eseeds/，检入）。
+> 烟测：fz_e 四作业 110 秒 ~8 万次/作业，0 crash 0 违规。harness 自身
+> 修过的两个假设（跨提交游标 EOF 预检无意义、commit 后事务类别残留）。
+> **已知问题例外**：SQLITE_NOTADB(26) 在 26 号开放问题的 repro 路径上
+> 显式允许（fuzzer 继续猎取其余 bug），文件携带 repro。
+>
 > **P2（Target B 敌意文件）已交付**：`fuzz/mkfiles.c`（确定性生成 7 类基础
 > trio —— empty/small/deep/bigval/freelist/walheavy/halfcommit；`make
 > fuzz-files` 现场再生，不入库）、11 个变异器（翻转/置位/截断/WAL 帧手术/
