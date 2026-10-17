@@ -425,6 +425,33 @@ Makefile（新增）:
 > ~4.2 万次/秒×4 干净（0 crash 0 leak）。注意：macOS 上 libFuzzer 与 UBSan
 > 不共链（运行时符号冲突），fuzzer 链接用 `fuzzer,address` 去掉 ubsan——
 > 这是 OSS-Fuzz 的标准 macOS 口径。
+>>
+> **P1（Target A file flavor）已交付**：OPEN 的两字节 flavor 分支落地
+> （0=:memory: / 1=file；file 走 $TMPDIR 下 pid 化路径、迭代前后清理 trio）；
+> journal-mode 的镜像契约按真转换语义建模（事务内当前模式早退返回现值、
+> 真实迁移在事务内必须被拒、迁移后模式镜像更新）；三种 knob 契约在文件端
+> 生效。种子 s25（单方向迁移 + 事务内拒绝）、s26（20 段 commit 的文件端
+> churn + 每提交 autocheckpoint）、s27（mem+file 双句柄交叉）。
+>
+> **随 P1 修掉的两个引擎 bug**：(a) `sqlite3PagerCheckpoint` 在本连接
+> 残留 WAL 读事务时（"commit 后 reader 滞留旧 mark 槽"），FULL/TRUNCATE
+> 模式对自身读锁独占升级死锁 → 恒 BUSY（对照系统 sqlite/快照 CLI 皆 0，
+> t_wal 只测过 PASSIVE 所以从未暴露）；修复 = checkpoint 前结束本连接的
+> WAL 读事务（pager_unlock 对 rollback 的既有语义）。(b) checkpoint 的
+> CKPT 锁先于 wal-index 映射申请，纯 KV 打开后零事务直接 checkpoint 会
+> 以 pShm==0 命中 IOERR_SHMLOCK（上游 SQL 因 schema 读先行从不踩到）；
+> 修复 = checkpoint 前先映射 wal-index 页 0。
+>
+> **开放问题（fuzz 发现、独立 repro、未修复）**：文件端 journal 模式
+> WAL→MEMORY→WAL 往返（journal 对象被 CloseWal 销毁后懒重建）之后，
+> 下一个 BEGIN 返回 SQLITE_NOTADB(26)。机制链 = CloseWal 的
+> checkpoint 写库 + OFF 路径的 SetVersion 编排 + 空零 -wal 的恢复 +
+> pager 侧 dbSize 残留，最终 LockBtree 对 page 1 的 magic 校验踩到全零
+> 页。j25probe（/tmp/fzprobe/j25.c）是独立再现。修复方向 = 恢复空-WAL
+> 路径的 walIndexWriteHdr 或者干脆恢复 eager-open 的正确编排；需要再
+> 一轮定位。s25 种子已收窄为单方向迁移，`make fuzz` 因此全绿（39 条
+> 流、23062 checks）。注意 btreelite.h 尚未映射 SQLITE_NOTADB(26)/
+> SQLITE_SCHEMA(17) 等错误码，此问题暴露时应用无从解读返回值。
 >
 > **P2（Target B 敌意文件）已交付**：`fuzz/mkfiles.c`（确定性生成 7 类基础
 > trio —— empty/small/deep/bigval/freelist/walheavy/halfcommit；`make

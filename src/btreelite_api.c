@@ -386,11 +386,19 @@ int btreelite_journal_mode(btreelite_db *p, int eMode){
     return BTREELITE_ERROR;
   }
 
-  /* Upstream OP_JournalMode closes the log (checkpointing it) before
-  ** switching out of WAL.  MEMORY->WAL additionally passes through OFF:
-  ** the pager cannot frame an in-memory journal. */
+  /* The transition, in upstream OP_JournalMode's exact order:
+  ** 1. settle the pager's journal mode FIRST (leaving WAL checkpoints and
+  **    deletes the log; MEMORY->WAL can only pass through OFF);
+  ** 2. then fix the file-header version bytes with the settled state,
+  **    committing the implicit write transaction that set them;
+  ** 3. the pager's WAL object itself is (re)created lazily by the next
+  **    pagerSharedLock() through pagerOpenWalIfPresent, exactly as
+  **    upstream does -- no eager open here. */
   if( eOld==PAGER_JOURNALMODE_WAL ){
     rc = sqlite3PagerCloseWal(pPager, &p->env);
+    if( rc==SQLITE_OK ){
+      sqlite3PagerSetJournalMode(pPager, eMode);
+    }
   }else if( eOld==PAGER_JOURNALMODE_MEMORY && eMode==BTREELITE_JOURNAL_WAL ){
     sqlite3PagerSetJournalMode(pPager, PAGER_JOURNALMODE_OFF);
     rc = SQLITE_OK;
@@ -415,13 +423,22 @@ int btreelite_journal_mode(btreelite_db *p, int eMode){
       return sqlite3PagerGetJournalMode(pPager);
     }
   }
-  if( eMode==BTREELITE_JOURNAL_WAL ){
-    /* Open the WAL connection eagerly.  lockBtree opens it on a page-1
-    ** read, but that read is skipped whenever pPage1 is already cached,
-    ** so the WAL would otherwise stay closed on this handle. */
-    int isOpen = 0;
-    rc = sqlite3PagerOpenWal(pPager, &isOpen);
-    if( rc!=SQLITE_OK ) return sqlite3PagerGetJournalMode(pPager);
+  /* A journal-mode change reshuffles the pager's state (the WAL may have
+  ** been created or deleted, the file may have grown, cached pages were
+  ** flushed under a different journal type); round-trip one read
+  ** transaction here so the next caller starts from a fully-refreshed
+  ** pager state -- the effect upstream gets from the statement boundary
+  ** that follows OP_JournalMode (page count, file-version cache and the
+  ** WAL reader snapshot all re-derived cleanly). */
+  {
+    int rc3;
+    rc3 = sqlite3BtreeBeginTrans(p->pBt, 0, 0);
+    if( rc3==SQLITE_OK && sqlite3BtreeTxnState(p->pBt)!=SQLITE_TXN_NONE ){
+      rc3 = sqlite3BtreeCommit(p->pBt);
+    }
+    if( rc3!=SQLITE_OK ){
+      return sqlite3PagerGetJournalMode(pPager);
+    }
   }
   return sqlite3PagerSetJournalMode(pPager, eMode);
 }

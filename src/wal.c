@@ -4330,6 +4330,21 @@ int sqlite3WalCheckpoint(
   sqlite3WalDb(pWal, db);
   if( xBusy2 ) (void)walEnableBlocking(pWal);
 
+  /* btreelite: unlike upstream SQL (which always reads the schema before
+  ** any checkpoint can run, touching the WAL and therefore mapping the
+  ** wal-index), a KV connection may checkpoint a freshly opened WAL
+  ** database without ever having mapped the wal-index.  The checkpoint
+  ** lock below lives in the shm lock-region, which requires the
+  ** connection's shm object to exist: map wal-index page 0 here so the
+  ** lock below never runs with pShm==0 (IOERR_SHMLOCK).  A btreelite
+  ** handle is used by one thread at a time, so there is no concurrent
+  ** remap to race with. */
+  {
+    volatile u32 *pWi0 = 0;
+    rc = walIndexPage(pWal, 0, &pWi0);
+    if( rc!=SQLITE_OK ) return rc;
+  }
+
   /* IMPLEMENTATION-OF: R-62028-47212 All calls obtain an exclusive
   ** "checkpoint" lock on the database file.
   ** EVIDENCE-OF: R-10421-19736 If any other process is running a

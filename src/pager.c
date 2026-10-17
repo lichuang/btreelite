@@ -7193,6 +7193,21 @@ int sqlite3PagerCheckpoint(
   ** cannot occur here; btreelite_checkpoint() opens the WAL explicitly
   ** via sqlite3PagerOpenWal() before handing off. */
   }
+  if( pPager->pWal && pPager->eState==PAGER_READER ){
+    /* btreelite: after a commit the pager keeps its WAL read transaction
+    ** open on a read-mark slot, and every later commit leaves that mark
+    ** behind the current mxFrame.  A checkpoint that backfills past the
+    ** mark must take those reader locks exclusively -- but the only holder
+    ** is this very connection, and os_unix.c tracks locks per connection,
+    ** so the request deadlocks on itself (upstream SQL never sees this
+    ** because statement boundaries close and re-open the read
+    ** transaction).  End the pager's read transaction here, the way
+    ** pager_unlock() does for rollbacks; the next pagerSharedLock() just
+    ** begins a fresh one.  With no reader of our own, FULL and TRUNCATE
+    ** can acquire every reader mark they need. */
+    sqlite3WalEndReadTransaction(pPager->pWal);
+    pPager->eState = PAGER_OPEN;
+  }
   if( pPager->pWal ){
     rc = sqlite3WalCheckpoint(pPager->pWal, db, eMode,
         (eMode<=SQLITE_CHECKPOINT_PASSIVE ? 0 : pPager->xBusyHandler),

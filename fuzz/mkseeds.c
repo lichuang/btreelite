@@ -69,6 +69,12 @@ static void basicRw(int h){        /* open, write txn, tree, wr cursor */
   createTree(h);
   curOpen(h, 0, 1);
 }
+static void fileOpen(int h){       /* file-backed flavor */
+  x(FZ_OP_OPEN); x(h); x(1);
+  beginTxn(h, 1);
+  createTree(h);
+  curOpen(h, 0, 1);
+}
 static void rdCursor(int h, int rt){  /* read txn + rd cursor on slot rt */
   beginTxn(h, 0);
   curOpen(h, rt, 0);
@@ -320,6 +326,56 @@ int main(void){
   sb(0x18181818);
   for(i=0;i<200;i++) x((i*29)+1);
   flush("s24-garbage");
+
+  /* s25: journal-mode dance on a file handle.  Single-direction
+  ** transitions only for now: a WAL->MEMORY->WAL round trip still leaves
+  ** the next BEGIN failing with SQLITE_NOTADB (open issue, docs/
+  ** fuzz-design.md) and must not be a seed until that is fixed. */
+  sb(0x25252525); fileOpen(0);
+  for(i=0;i<10;i++) putk(0, 9, 0, 30);
+  jmode(0, 1);            /* request WAL, current == WAL: stays 5 */
+  jmode(0, 0);            /* request MEMORY inside txn -> ERROR */
+  commitT(0);
+  beginTxn(0, 1);
+  for(i=0;i<10;i++) putk(0, 9, 1, 44);
+  ckp(0, 0); ckp(0, 1);   /* txn open -> LOCKED(6) */
+  commitT(0);
+  ckp(0, 0);
+  integrity(0, 0);
+  commitT(0);
+  flush("s25-journal-file");
+
+  /* s26: file churn with autocheckpoint on every commit */
+  sb(0x26262626); fileOpen(0);
+  ackpt(0, 1);            /* checkpoint threshold 1 */
+  for(j=0;j<20;j++){
+    for(i=0;i<10;i++) putk(0, 7, 0, 18+i);
+    commitT(0); beginTxn(0, 1);
+  }
+  rdCursor(0,0);
+  for(i=0;i<24;i++) getk(0, 7, 0);
+  commitT(0);
+  integrity(0, 0);
+  commitT(0);
+  flush("s26-file-churn");
+
+  /* s27: one :memory: handle plus one file handle, crossing traffic */
+  sb(0x27272727);
+  x(FZ_OP_OPEN); x(0); x(0);        /* flavor 0: memdb */
+  fileOpen(1);
+  for(i=0;i<30;i++) putk(0, 9, 0, 33);
+  for(i=0;i<30;i++) putk(1, 9, 1, 66);
+  commitT(0); commitT(1);
+  beginTxn(0, 0); rdCursor(1, 0);
+  for(i=0;i<12;i++) getk(1, 9, 1);
+  commitT(0);
+  jmode(1, 0);            /* file WAL->MEMORY outside txn */
+  rdCursor(1, 0);
+  for(i=0;i<12;i++) getk(1, 9, 1);
+  commitT(0);
+  integrity(1, 0);
+  commitT(0);
+  flush("s27-memfile-mixed");
 
   printf("mkseeds: seeds written to fuzz/seeds/\n");
   return 0;

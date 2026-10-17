@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define NH       4    /* handles per input */
 #define NROOTMAX 32   /* root slots per handle */
@@ -70,6 +71,9 @@ typedef struct Handle {
   int live;
   btreelite_db *db;
   int txn, nSpt, sync, interrupt;
+  int ifile;                   /* 0 = :memory:, 1 = file-backed */
+  int journal;                 /* 4=MEMORY 5=WAL (mirrors the engine) */
+  char zPath[384];             /* file-backed trio base (pid-uniqued) */
   Root r[NROOTMAX];
   Img base;
   Img snap[NSNAP];
@@ -393,7 +397,15 @@ static void resetAll(void){
     memset(&cs[i], 0, sizeof(Cur));
   }
   for(i=0; i<NH; i++){
-    if( hs[i].live ) btreelite_close(hs[i].db);
+    if( hs[i].live ){
+      btreelite_close(hs[i].db);
+      if( hs[i].ifile ){             /* leave no trio behind */
+        char z[512];
+        unlink(hs[i].zPath);
+        snprintf(z, sizeof z, "%s-wal", hs[i].zPath); unlink(z);
+        snprintf(z, sizeof z, "%s-shm", hs[i].zPath); unlink(z);
+      }
+    }
     freeRoots(&hs[i]);
     memset(&hs[i], 0, sizeof(Handle));
   }
@@ -421,13 +433,33 @@ int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *name){
     switch( op ){
 
     case FZ_OP_OPEN: {
+      uint32_t flavor;
       gOp = "open";
-      hb = drv_pick(&d, NH); (void)drv_u8(&d);
+      hb = drv_pick(&d, NH);
+      flavor = drv_u8(&d) & 1;
       h = &hs[hb];
       if( h->live ) break;
-      rc = btreelite_open(":memory:", &h->db);
-      CK( rc==BTREELITE_OK );
+      if( flavor==0 ){
+        rc = btreelite_open(":memory:", &h->db);
+        CK( rc==BTREELITE_OK );
+        h->journal = BTREELITE_JOURNAL_MEMORY;
+      }else{
+        /* file-backed: the trio must not pre-exist (a leftover -wal
+        ** would change the semantics of the very next actions) */
+        const char *td = getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
+        snprintf(h->zPath, sizeof h->zPath, "%s/btfza-%ld-%u",
+                 td, (long)getpid(), hb);
+        unlink(h->zPath);
+        { char z[512];
+          snprintf(z, sizeof z, "%s-wal", h->zPath); unlink(z);
+          snprintf(z, sizeof z, "%s-shm", h->zPath); unlink(z);
+        }
+        rc = btreelite_open(h->zPath, &h->db);
+        CK( rc==BTREELITE_OK );
+        h->journal = BTREELITE_JOURNAL_WAL;
+      }
       h->live = 1; h->txn = 0; h->nSpt = 0;
+      h->ifile = (int)flavor;
       h->sync = BTREELITE_SYNC_FULL; h->interrupt = 0;
       break;
     }
@@ -445,6 +477,12 @@ int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *name){
           }
       }
       btreelite_close(h->db);
+      if( h->ifile ){                 /* leave no trio behind */
+        char z[512];
+        unlink(h->zPath);
+        snprintf(z, sizeof z, "%s-wal", h->zPath); unlink(z);
+        snprintf(z, sizeof z, "%s-shm", h->zPath); unlink(z);
+      }
       freeRoots(h);
       memset(h, 0, sizeof(Handle));
       break;
@@ -919,6 +957,10 @@ int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *name){
       if( !h->live ) break;
       mode = drv_pick(&d, 4);
       rc = btreelite_checkpoint(h->db, (int)mode, 0, 0);
+      if( getenv("BTREELITE_FUZZ_DEBUG") && !( (h->txn!=0) ? rc==6 : rc==BTREELITE_OK ) )
+        fprintf(stderr, "CKDBG act=%u h=%u file=%d j=%d mode=%u txn=%d eng=%d\n",
+                gAct, hb, h->ifile, h->journal, mode,
+                btreelite_txn_state(h->db), h->txn);
       CK( (h->txn!=0) ? rc==6 : rc==BTREELITE_OK );
       break;
     }
@@ -927,19 +969,25 @@ int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *name){
       uint32_t mode;
       gOp = "journal_mode";
       hb = drv_pick(&d, NH);
+      mode = drv_pick(&d, 2) + 4;
       h = &hs[hb];
       if( !h->live ) break;
-      mode = drv_pick(&d, 2) + 4;
-      if( h->txn!=0 && getenv("BTREELITE_FUZZ_DEBUG")
-       && h->txn!=btreelite_txn_state(h->db) )
-        fprintf(stderr, "JDBG mirror-txn=%d engine-txn=%d\n",
-                h->txn, btreelite_txn_state(h->db));
       rc = btreelite_journal_mode(h->db, (int)mode);
-      /* :memory: folds every request to MEMORY *before* the transaction
-      ** guard, and an already-current request early-returns: on a memdb
-      ** this always yields 4 -- the no-transition-inside-a-txn refusal
-      ** is only reachable with file-backed handles (Target B). */
-      CK( rc==BTREELITE_JOURNAL_MEMORY );
+      /* memdb: every request folds to MEMORY *before* the transaction
+      ** guard, and an already-current request early-returns -- always 4.
+      ** file: a transition needs no open transaction (a no-op request
+      ** returns the current early, even inside one); the mirror tracks
+      ** the resulting mode either way. */
+      if( h->ifile==0 ){
+        CK( rc==BTREELITE_JOURNAL_MEMORY );
+      }else if( mode==(uint32_t)h->journal ){
+        CK( rc==(int)mode );
+      }else if( h->txn!=0 ){
+        CK( rc==BTREELITE_ERROR );
+      }else{
+        CK( rc==(int)mode );
+        h->journal = (int)mode;
+      }
       break;
     }
 
