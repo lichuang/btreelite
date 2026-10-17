@@ -967,6 +967,7 @@ int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *name){
 
     case FZ_OP_JOURNAL: {
       uint32_t mode;
+      int nc = 0, ci;
       gOp = "journal_mode";
       hb = drv_pick(&d, NH);
       mode = drv_pick(&d, 2) + 4;
@@ -975,14 +976,17 @@ int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *name){
       rc = btreelite_journal_mode(h->db, (int)mode);
       /* memdb: every request folds to MEMORY *before* the transaction
       ** guard, and an already-current request early-returns -- always 4.
-      ** file: a transition needs no open transaction (a no-op request
-      ** returns the current early, even inside one); the mirror tracks
-      ** the resulting mode either way. */
+      ** file: an already-current request early-returns regardless of
+      ** transaction or cursors; a transition needs no open transaction
+      ** and no open cursors (cursor page pins survive commits and poison
+      ** the WAL-restart cache reset, so the engine refuses).  The mirror
+      ** tracks the resulting mode on success only. */
+      for(ci=0;ci<NCUR;ci++){ if( cs[ci].live && cs[ci].h==hb ) nc++; }
       if( h->ifile==0 ){
         CK( rc==BTREELITE_JOURNAL_MEMORY );
       }else if( mode==(uint32_t)h->journal ){
         CK( rc==(int)mode );
-      }else if( h->txn!=0 ){
+      }else if( h->txn!=0 || nc ){
         CK( rc==BTREELITE_ERROR );
       }else{
         CK( rc==(int)mode );

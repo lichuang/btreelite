@@ -328,9 +328,8 @@ int main(void){
   flush("s24-garbage");
 
   /* s25: journal-mode dance on a file handle.  Single-direction
-  ** transitions only for now: a WAL->MEMORY->WAL round trip still leaves
-  ** the next BEGIN failing with SQLITE_NOTADB (open issue, docs/
-  ** fuzz-design.md) and must not be a seed until that is fixed. */
+  ** transitions only here: the full round trip lives in s27 (it is
+  ** verified since the NOTADB fix; see s27's comment). */
   sb(0x25252525); fileOpen(0);
   for(i=0;i<10;i++) putk(0, 9, 0, 30);
   jmode(0, 1);            /* request WAL, current == WAL: stays 5 */
@@ -376,6 +375,34 @@ int main(void){
   integrity(1, 0);
   commitT(0);
   flush("s27-memfile-mixed");
+
+  /* s28: the formerly-banned journal round trip WITH an open cursor.
+  ** The WAL->MEMORY->WAL dance used to poison the still-pinned page 1
+  ** through the pcache reset on the next WAL restart and fail the next
+  ** BEGIN with SQLITE_NOTADB (docs/fuzz-design.md, "开放问题 → 已解决";
+  ** engine commit refuses journal-mode changes with live cursors).
+  ** Verify every refusal, close the cursor, run the full round trip
+  ** cleanly, and confirm the engine serves new work on the file
+  ** afterwards. */
+  sb(0x28282828ULL); fileOpen(0);
+  for(i=0;i<10;i++) putk(0, 9, 0, 30);
+  jmode(0, 0);            /* live cursor -> ERROR (same refusal as in-txn) */
+  commitT(0);
+  jmode(0, 0);            /* cursor still open -> ERROR */
+  jmode(0, 1);            /* same-mode request early-returns 5 even with cursor */
+  curClose(0);
+  jmode(0, 0);            /* clean: -> MEMORY, header version 1 */
+  jmode(0, 1);            /* -> WAL, version 2, eager WAL object reopen */
+  beginTxn(0, 1);
+  curOpen(0, 0, 1);
+  for(i=0;i<6;i++) putk(0, 9, 1, 44);
+  rdCursor(0, 0);         /* read what survived the round trip */
+  for(i=0;i<10;i++) getk(1, 9, 1);
+  commitT(0);
+  ckp(0, 0);
+  integrity(0, 0);
+  commitT(0);
+  flush("s28-journal-roundtrip");
 
   { /* ---- Target E seeds (fuzz/eseeds/) -------------------------- */
     static uint8_t ebuf[1<<16];

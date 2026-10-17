@@ -442,16 +442,31 @@ Makefile（新增）:
 > 以 pShm==0 命中 IOERR_SHMLOCK（上游 SQL 因 schema 读先行从不踩到）；
 > 修复 = checkpoint 前先映射 wal-index 页 0。
 >
-> **开放问题（fuzz 发现、独立 repro、未修复）**：文件端 journal 模式
-> WAL→MEMORY→WAL 往返（journal 对象被 CloseWal 销毁后懒重建）之后，
-> 下一个 BEGIN 返回 SQLITE_NOTADB(26)。机制链 = CloseWal 的
-> checkpoint 写库 + OFF 路径的 SetVersion 编排 + 空零 -wal 的恢复 +
-> pager 侧 dbSize 残留，最终 LockBtree 对 page 1 的 magic 校验踩到全零
-> 页。j25probe（/tmp/fzprobe/j25.c）是独立再现。修复方向 = 恢复空-WAL
-> 路径的 walIndexWriteHdr 或者干脆恢复 eager-open 的正确编排；需要再
-> 一轮定位。s25 种子已收窄为单方向迁移，`make fuzz` 因此全绿（39 条
-> 流、23062 checks）。注意 btreelite.h 尚未映射 SQLITE_NOTADB(26)/
-> SQLITE_SCHEMA(17) 等错误码，此问题暴露时应用无从解读返回值。
+> **开放问题 → 已解决**：文件端 journal 模式 WAL→MEMORY→WAL 往返之后
+> 下一个 BEGIN 返回 SQLITE_NOTADB(26)，根因已定位并修复。机制链（
+> lldb watchpoint + pcache/pager 插桩全链追踪）：
+> 1. 打开的 cursor 使若干页保持 pinned（refSum>0），跨事务提交持续存活；
+> 2. journal 往返后下次取页触发 WAL 读事务重启
+>    `pagerBeginReadTransaction()` → `sqlite3WalBeginReadTransaction`
+>    检测到索引头变化 → `pager_reset()` → `sqlite3PcacheClear` →
+>    `sqlite3PcacheTruncate(0)`；
+> 3. 该 truncate 在 **nRefSum>0 时按上游设计把 page 1 原地 memset 清零并
+>    保留缓存对象**（src/pcache.c "If there is a reference to page 1 …
+>    the data area associated with page 1 is zeroed, but the page object
+>    is not dropped"）；
+> 4. 下一次 lockBtree() 取页 1 命中的是含零内容的缓存对象（不走
+>    getPageNormal 的读路径），magic 校验失败 → SQLITE_NOTADB(26)。
+> 上游靠 SQLITE_DEBUG 断言（`sqlite3PagerSharedLock` 要求 nRefSum==0、
+> `unlockBtreeIfUnused` 要求 refcount==1）在调试构建抓此类状态泄漏，
+> btreelite 关闭断言后成为静默毒源。j25probe（/tmp/fzprobe/j25.c，
+> 带 cursor 版）与 j25b（先关 cursor 版）双向独立再现：前者修复后
+> journal 4 返回 BTREELITE_ERROR、begin=0；后者全程正常。
+> **修复** = `btreelite_journal_mode()` 增加门禁：存在打开 cursor 或活动
+> 事务时返回 BTREELITE_ERROR（对齐上游 OP_JournalMode 的语句边界语义），
+> 另在 MEMORY→WAL 迁移末尾 eager 重建 WAL 对象消除半状态。全量验证：
+> 9 套件 9644 checks、`make fuzz` 45 流 23262 checks 全过，无新违规。
+> btreelite.h 仍未映射 SQLITE_NOTADB(26)/SQLITE_SCHEMA(17) 等错误码，
+> 后续映射错误码时一并处理。
 >
 >
 > **P1 的 Target E（争用 fuzzer）已交付**：`fuzz/target_e.c` —— 同进程
@@ -461,10 +476,19 @@ Makefile（新增）:
 > 核验 + per-root integrity_check。争用族错误码（BUSY/LOCKED/BUSY_SNAPSHOT）
 > 合法且不改模型；读事务中跨连接升级（read→write upgrade）会终止打开的
 > 读事务，模型同步失效快照。种子 e01-e06（fuzz/eseeds/，检入）。
-> 烟测：fz_e 四作业 110 秒 ~8 万次/作业，0 crash 0 违规。harness 自身
-> 修过的两个假设（跨提交游标 EOF 预检无意义、commit 后事务类别残留）。
-> **已知问题例外**：SQLITE_NOTADB(26) 在 26 号开放问题的 repro 路径上
-> 显式允许（fuzzer 继续猎取其余 bug），文件携带 repro。
+> harness 的模型假设修过五处（每处机制见 harness 注释）：
+> (1) 跨提交游标 EOF 预检无意义——get() 本身就是落点重推导；
+> (2) commit 后事务类别残留（wkind 重置）；
+> (3) 嵌套 rbegin 不推进快照锚点——已在读事务中再 begin(0) 是嵌套
+>     begin，引擎保持原快照（P5），只有新快照才能让 rsnap=led->n；
+> (4) read→write 升级后残留只读游标不可写——引擎写游标守卫拒绝
+>     put 返回 BTREELITE_ERROR，harness 升级先关旧读游标再开写游标；
+> (5) 快照外之树读出 CORRUPT(11) 合法——读者在树的创建事务提交前
+>     begin，其快照页数不覆盖根号，btree 层结构检查报 CORRUPT，
+>     与上游 pgno>btreePagecount 的 CORRUPT_BKPT 同构；cursor_open
+>     只登记根号、get() 才落点取页，两处都要允许并跳过；
+>     (3)(4)(5) 均由 fz_e 战役的确定复现驱动修复。
+> NOTADB(26) 允许例外已随开放问题修复移除。
 >
 > **P2（Target B 敌意文件）已交付**：`fuzz/mkfiles.c`（确定性生成 7 类基础
 > trio —— empty/small/deep/bigval/freelist/walheavy/halfcommit；`make

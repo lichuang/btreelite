@@ -385,6 +385,17 @@ int btreelite_journal_mode(btreelite_db *p, int eMode){
   if( sqlite3BtreeTxnState(p->pBt)!=SQLITE_TXN_NONE ){
     return BTREELITE_ERROR;
   }
+  /* Open cursors keep pages pinned, and a journal-mode change reshuffles
+  ** the pager (CloseWal / OpenWal / cache resets); when the WAL read
+  ** transaction is then restarted, the pager resets the cache, and the
+  ** truncate path zeroes the still-pinned page 1 in place while keeping
+  ** the object.  The next lockBtree() then fetches page 1 out of the
+  ** cache as a zero page and returns SQLITE_NOTADB.  Upstream never hits
+  ** this because it asserts (SQLITE_DEBUG) that a shared lock is taken
+  ** with an empty page cache.  Refuse mode changes with live cursors. */
+  if( p->pCurs ){
+    return BTREELITE_ERROR;
+  }
 
   /* The transition, in upstream OP_JournalMode's exact order:
   ** 1. settle the pager's journal mode FIRST (leaving WAL checkpoints and
@@ -437,6 +448,24 @@ int btreelite_journal_mode(btreelite_db *p, int eMode){
       rc3 = sqlite3BtreeCommit(p->pBt);
     }
     if( rc3!=SQLITE_OK ){
+      return sqlite3PagerGetJournalMode(pPager);
+    }
+  }
+  /* Settling INTO WAL recreates the WAL object eagerly: the lazy
+  ** (re)creation through pagerOpenWalIfPresent() only fires when the
+  ** -wal file exists on disk, and after a WAL->MEMORY->WAL round trip it
+  ** does not (CloseWal deletes it).  That left the engine in a half
+  ** state -- journalMode=WAL with no Wal object, the empty -wal
+  ** recreated lazily without a wal-index header recovery pass, page 1
+  ** fetched as a zero page -- after which lockBtree's magic check failed
+  ** and btreelite_begin() leaked the raw SQLITE_NOTADB(26) upward.
+  ** Opening here re-establishes the complete WAL state (object, index
+  ** header, read-mark table) so the following transactions start from
+  ** something real. */
+  if( eMode==BTREELITE_JOURNAL_WAL ){
+    int isOpen = 0;
+    rc = sqlite3PagerOpenWal(pPager, &isOpen);
+    if( rc!=SQLITE_OK ){
       return sqlite3PagerGetJournalMode(pPager);
     }
   }

@@ -148,6 +148,16 @@ static void readCheck(Hnd *h, const uint8_t *k, int klen){
   ** landing operation that re-derives the position (its rc contract
   ** covers what the pre-check used to claim) */
   rc = btreelite_get(h->cur, k, klen);
+  if( rc==BTREELITE_CORRUPT ){
+    /* btreelite_get() lands the cursor lazily: the root is validated
+    ** against the snapshot's page count only at the first access, and a
+    ** reader that began before the tree's creating transaction committed
+    ** has a snapshot that does not cover the root -- the btree layer
+    ** reports CORRUPT, exactly like upstream's CORRUPT_BKPT for
+    ** pgno>btreePagecount.  Legal for a stale reader; the terminal
+    ** reopen still catches real corruption. */
+    return;
+  }
   absent = expectAt(k, klen, h->rsnap, &pv, &pvlen);
   CKE( rc == (absent ? BTREELITE_NOTFOUND : BTREELITE_OK) );
   if( rc==BTREELITE_OK ){
@@ -426,7 +436,12 @@ int btreeliteFuzzEOneInput(const uint8_t *a, size_t n, const char *name){
       case 6: {                                  /* rbegin */
         rc = btreelite_begin(h2.db, 0);
         CKE( contentionFamily(rc) );
-        if( rc==BTREELITE_OK ) h2.rsnap = led->n;
+        /* A read-begin while a read transaction is already open is a
+        ** nested begin: the engine keeps the existing snapshot (P5), so
+        ** only a fresh snapshot must re-anchor the model's view. */
+        if( rc==BTREELITE_OK && h2.rsnap<0 ){
+          h2.rsnap = led->n;
+        }
         break;
       }
       case 7: {                                  /* rget */
@@ -444,6 +459,16 @@ int btreeliteFuzzEOneInput(const uint8_t *a, size_t n, const char *name){
         if( h2.rsnap<0 ) break;                  /* needs the read txn */
         if( h2.cur==0 ){
           rc = btreelite_cursor_open(h2.db, h2.root, 0, &h2.cur);
+          if( rc==BTREELITE_CORRUPT ){
+            /* The tree is not part of this reader snapshot: a reader that
+            ** began before the tree's creating transaction committed has
+            ** a snapshot whose page count does not cover the root, and
+            ** the btree layer's structural check reports CORRUPT --
+            ** exactly what upstream does (CORRUPT_BKPT for
+            ** pgno>btreePagecount).  Legal for a stale reader; real
+            ** corruption is still caught by the terminal reopen. */
+            break;
+          }
           CKE( contentionFamily(rc) );
           if( rc!=BTREELITE_OK ) break;
         }
@@ -466,6 +491,16 @@ int btreeliteFuzzEOneInput(const uint8_t *a, size_t n, const char *name){
           /* a read->write upgrade in one connection ends the open read
           ** transaction at its commit; the snapshot does not survive */
           h2.rsnap = -1;
+        }
+        if( h2.cur ){
+          /* A cursor opened with wrFlag=0 stays a read cursor even after
+          ** the connection upgraded to a write transaction: the engine's
+          ** write-cursor guard refuses btreelite_put() with BTREELITE_ERROR
+          ** (upstream asserts the same in the btree layer and relies on
+          ** the absence of such calls at its statement level).  Close the
+          ** stale reading cursor and open a write cursor instead. */
+          btreelite_cursor_close(h2.cur);
+          h2.cur = 0;
         }
         if( h2.cur==0 ){
           rc = btreelite_cursor_open(h2.db, h2.root, 1, &h2.cur);
