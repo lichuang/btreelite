@@ -63,7 +63,13 @@ static void btreeliteWalCallback(btreelite_db *p);
 ** must report NOMEM" and "return whatever the layer produced".
 */
 static int apiExit(btreelite_db *p, int rc){
-  if( p!=0 && p->env.mallocFailed ){
+  if( p!=0 && (p->env.mallocFailed || rc==SQLITE_IOERR_NOMEM) ){
+    /* Two faces of an allocation failure reach an API exit: the sticky
+    ** flag (a connection-attached allocation failed and lookaside was
+    ** disabled) and the IOERR_NOMEM code (a db-less allocation in the
+    ** journal/shm layer failed and the caller translated it upstream's
+    ** way, e.g. memjournal's write path).  Upstream's apiHandleError
+    ** catches both: clear the sticky bit and report plain NOMEM. */
     sqlite3OomClear(&p->env);
     return BTREELITE_NOMEM;
   }
@@ -125,6 +131,17 @@ int btreelite_open(const char *zPath, btreelite_db **ppDb){
   if( *ppDb==0 ) return BTREELITE_NOMEM;
   (*ppDb)->env.mutex = sqlite3MutexAlloc(SQLITE_MUTEX_RECURSIVE);
   (*ppDb)->env.aDb = (Db*)sqlite3MallocZero(sizeof(Db));
+  if( (*ppDb)->env.mutex==0 || (*ppDb)->env.aDb==0 ){
+    /* OOM on the connection's own frame: nothing was opened yet, so
+    ** hand back what was taken and report NOMEM.  (The deterministic
+    ** faulting allocator crashed here first: the success path below
+    ** dereferenced env.aDb[0] while aDb was NULL.) */
+    sqlite3_free((*ppDb)->env.aDb);
+    if( (*ppDb)->env.mutex ) sqlite3_mutex_free((*ppDb)->env.mutex);
+    sqlite3_free(*ppDb);
+    *ppDb = 0;
+    return BTREELITE_NOMEM;
+  }
   (*ppDb)->env.nDb = 1;
   (*ppDb)->env.errMask = 0xff;
   (*ppDb)->iSync = BTREELITE_SYNC_FULL;   /* SQLite's default */

@@ -404,6 +404,105 @@ int main(void){
   commitT(0);
   flush("s28-journal-roundtrip");
 
+  /* ---- Target C seeds (fuzz/oomseeds/) ----------------------------- */
+  /* Stream = [K byte][8B seed][Target A action ops]; K<2 disables the
+  ** injections (plain model-vs-engine pass), K>=2 fails every K-th
+  ** allocation.  mkdir happens inside the emitter below. */
+  mkdir("fuzz/oomseeds", 0777);
+  { static uint8_t obuf[1<<16];
+    static size_t on;
+    #define ok2(o) obuf[on++] = (uint8_t)(o)
+    #define oflush(nm) do{ \
+      char op[256]; FILE *of; \
+      snprintf(op, sizeof op, "fuzz/oomseeds/%s.bin", nm); \
+      of = fopen(op, "wb"); \
+      if( of==0 ){ fprintf(stderr, "mkseeds: cannot write %s\n", op); exit(1); } \
+      fwrite(obuf, 1, on, of); fclose(of); on = 0; }while(0)
+    /* o01: mixed CRUD on memory+file, K=3 */
+    { uint64_t sd = 0x0101010101010101ULL; int i2, j2;
+      ok2(3); ok2(60);
+      for(j2=0;j2<8;j2++) ok2((int)((sd>>(8*j2)) & 0xff) | 0x01);
+      /* keep it simple: a shape-valid open (flavor file) then writes */
+      ok2(1); ok2(0); ok2(1);            /* open h0 file */
+      for(i2=0;i2<12;i2++) putk(0, 9, 0, 40);
+      commitT(0);
+      rdCursor(0, 0);
+      for(i2=0;i2<8;i2++) getk(0, 9, 0);
+      beginTxn(0, 1);
+      for(i2=0;i2<6;i2++) putk(0, 12, 1, 70);
+      spR(0, 1);
+      for(i2=0;i2<4;i2++) delk(0, 9, 0);
+      commitT(0);
+      integrity(0, 0);
+      commitT(0);
+      jmode(0, 0); jmode(0, 0);          /* same-mode requests only */
+      oflush("o01-mixed-k3");
+    }
+    /* o02: aggressive K=2, savepoint churn */
+    { uint64_t sd = 0x0202020202020202ULL; int i2, j2;
+      ok2(2); ok2(40);
+      for(j2=0;j2<8;j2++) ok2((int)((sd>>(8*j2)) & 0xff) | 0x01);
+      beginTxn(0, 1);
+      createTree(0);
+      ok2(9); ok2(0); ok2(1);            /* cursor_open h0 root0 wr=1 */
+      for(i2=0;i2<30;i2++) putk(0, i2%40+2, i2%5, i2%50);
+      for(i2=0;i2<10;i2++){ spR(0,1); spRb(0,1); }
+      for(i2=0;i2<10;i2++) delk(0, i2%9+2, 0);
+      commitT(0);
+      integrity(0, 0);
+      commitT(0);
+      oflush("o02-savepoint-k2");
+    }
+    /* o03: K=5, valwrite chains + checkpoint */
+    { uint64_t sd = 0x0303030303030303ULL; int i2, j2;
+      ok2(5); ok2(80);
+      for(j2=0;j2<8;j2++) ok2((int)((sd>>(8*j2)) & 0xff) | 0x01);
+      fileOpen(0);
+      for(i2=0;i2<10;i2++) putk(0, 20, 3, 300);
+      commitT(0);
+      beginTxn(0, 1);
+      rdCursor(0, 0);
+      for(i2=0;i2<8;i2++){ vread(0, 0, 100); vwrite(0, 5, 40, 1); }
+      commitT(0);
+      ckp(0, 0); ckp(0, 1);
+      integrity(0, 0);
+      commitT(0);
+      oflush("o03-valwrite-k5");
+    }
+    /* o04: K=7, interrupt + integrity sweeps */
+    { uint64_t sd = 0x0404040404040404ULL; int i2, j2;
+      ok2(7); ok2(50);
+      for(j2=0;j2<8;j2++) ok2((int)((sd>>(8*j2)) & 0xff) | 0x01);
+      fileOpen(0);
+      for(i2=0;i2<15;i2++) putk(0, 11, 2, 120);
+      commitT(0);
+      setint(0);
+      beginTxn(0, 0);
+      ok2(26); ok2(0);                    /* integrity h0 root0 */
+      rbT(0);
+      oflush("o04-interrupt-k7");
+    }
+    /* o05: K=11, multi-tree + clears */
+    { uint64_t sd = 0x0505050505050505ULL; int i2, j2;
+      ok2(11); ok2(100);
+      for(j2=0;j2<8;j2++) ok2((int)((sd>>(8*j2)) & 0xff) | 0x01);
+      beginTxn(0, 1);
+      createTree(0); createTree(0); createTree(0);
+      ok2(9); ok2(0); ok2(1);
+      for(i2=0;i2<9;i2++) putk(0, i2%30+2, i2%5, 60);
+      commitT(0);
+      beginTxn(0, 1);
+      clearTree(0, 2);
+      commitT(0);
+      integrity(0, 0);
+      integrity(0, 2);
+      commitT(0);
+      oflush("o05-multitree-k11");
+      #undef ok2
+      #undef oflush
+    }
+  }
+
   { /* ---- Target E seeds (fuzz/eseeds/) -------------------------- */
     static uint8_t ebuf[1<<16];
     static size_t en;

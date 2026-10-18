@@ -1,8 +1,22 @@
 # btreelite Fuzz 测试设计
 
-> 设计文档（未实现）。目标读者是准备动手实现的作者本人，以及未来读 fuzz 的贡献者。
-> 本文与 docs/kv-format-design.md（格式）、docs/design.md（journal/基准）同级。
-> 设计基线 = 当前 main（t_api 144 版本之后）。
+> 设计文档（主体已实现交付）。目标读者是准备动手实现的作者本人，以及未来读
+> fuzz 的贡献者。本文与 docs/kv-format-design.md（格式）、docs/design.md（journal/
+> 基准）同级。设计基线 = 当前 main（t_api 144 版本之后）。
+> **状态总账（随交付更新；各节头部同样带状态标记）**：
+>
+> | 事项 | 状态 |
+> |---|---|
+> | Target A（:memory: + file flavor，P0/P1） | ✅ 已交付 |
+> | Target B（敌意文件 reopen 面，P2） | ✅ 已交付 |
+> | Target C（OOM 注入，选 1 语义，P3） | ✅ 已交付 |
+> | Target E（双句柄争用，P1） | ✅ 已交付 |
+> | 基建：file.dict / make cov 覆盖率 / 双引擎 Makefile | ✅ |
+> | P4：A+B 组合（§3.4 损坏文件上跑动作流） | ⬜ 未立项 |
+> | Target D：白盒深层（§5） | ⬜ 未立项（触发条件见 §5） |
+> | Target C 内：注入活跃期的 journal-mode 动作契约（§4.3 跳过项） | ⬜ 待细化 |
+> | SQLITE_DEBUG 构建修复（sizeof(Schema) + os_unix 裁剪符号） | ⬜ 挂起 |
+> | 进程级 kill fuzz（§6.1，并入 B 的 harness 变体） | ⬜ 未立项 |
 
 ---
 
@@ -10,14 +24,14 @@
 
 ### 0.1 我们要证明什么
 
-| 目标 | 措辞 | 归属 target |
-|---|---|---|
-| API 状态机任意使用下不崩、不挂、不 UB、不泄漏 | 任意调用序列 × 任意合法参数 | **A** |
-| 存进去的东西永远是存进去的东西 | 内存模型对照 + 全量扫描 + integrity_check | A |
-| 敌意文件不是 UB | 损坏的 db/-wal/-shm 重开 → CORRUPT 或行为正确，绝不越界/死环 | B |
-| OOM 不是 UB 且已提交数据存活 | 确定性注入分配失败 | C |
-| 并发不破坏格式 | 双 handle 争用、rc 在允许集 | E |
-| （白盒）balance/SAVEPOSITION 深路径 | 直接驱动 BtCursor | D |
+| 目标 | 措辞 | 归属 target | 状态 |
+|---|---|---|---|
+| API 状态机任意使用下不崩、不挂、不 UB、不泄漏 | 任意调用序列 × 任意合法参数 | **A** | ✅ |
+| 存进去的东西永远是存进去的东西 | 内存模型对照 + 全量扫描 + integrity_check | A | ✅ |
+| 敌意文件不是 UB | 损坏的 db/-wal/-shm 重开 → CORRUPT 或行为正确，绝不越界/死环 | B | ✅ |
+| OOM 不是 UB 且已提交数据存活 | 确定性注入分配失败 | C | ✅ |
+| 并发不破坏格式 | 双 handle 争用、rc 在允许集 | E | ✅ |
+| （白盒）balance/SAVEPOSITION 深路径 | 直接驱动 BtCursor | D | ⬜ 未立项 |
 
 ### 0.2 非目标
 
@@ -76,7 +90,8 @@ Linux/gcc 场景由 fuzz_replay 兜底，保证回归语料永远可跑。
 
 ---
 
-## 2. Target A：状态化 API fuzz（中心靶）
+## 2. Target A：状态化 API fuzz（中心靶）—— ✅ 已交付（P0/P1，含 file flavor；
+> 交付记录见文末附录，种子 fuzz/seeds/）
 
 ### 2.1 形态
 
@@ -199,7 +214,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size){
 
 ---
 
-## 3. Target B：敌意文件（S5/S8/S9/S10/S11 的唯一入口）
+## 3. Target B：敌意文件（S5/S8/S9/S10/S11 的唯一入口）—— ✅ 已交付（P2，
+> reopen-only 面；fuzz/mkfiles.c + fuzz/fileseeds/ + fuzz/fz_file；本节下的
+> **3.4 组合面未立项**，见 P4）
 
 ### 3.1 语料生成（`make fuzz-seeds`，不依赖 libFuzzer）
 
@@ -251,14 +268,21 @@ API 重新打开损坏文件组:（不得 crash / hang / ASan 报 / 泄漏；han
 
 （关键设计点：**不**承诺"损坏必报 CORRUPT"——上游也不承诺；承诺的是**UB 不存在**。)
 
-### 3.4 与 Target A 的组合（进阶，P4）
+### 3.4 与 Target A 的组合（进阶，P4）—— ⬜ 未立项
+>
+> **现状**：Target B 已交付的是 reopen-only oracle（损坏文件重开+探针合法集）；
+> "变异文件上继续跑完整状态化 API 动作流"（模型不可知的组合面）仍在本表之外，
+> 是剩余两项 P4 工作之一。复用面 = mkfiles 基座 + target_api 动作流 + file.dict，
+> 无语义决策待定。
 
 变异 → open 成功 → 继续状态化 API 操作（模型=未知，只查 rc 合法集 + integrity 不崩）。
 libFuzzer 天然会把这两段串成一次输入，Target B 的 harness 内嵌 Target A 的解码器即可。
 
 ---
 
-## 4. Target C：OOM 注入 fuzz（S12）
+## 4. Target C：OOM 注入 fuzz（S12）—— ✅ 已交付（P3；fuzz/target_oom.c +
+> fuzz/wrap_oom.c + fuzz/fz_oom + fuzz/oomseeds/；语义定案见 4.2，oracle 规则见
+> 4.3；遗留：注入活跃期的 journal-mode 动作契约待细化）
 
 ### 4.1 实现机制（已核实）
 
@@ -276,34 +300,52 @@ fuzz/target_oom.c:
 `fault.c` 现有的 benign-malloc 钩子保留可用（上游内部在 hash 扩容等处包 benign
 窗口），fuzz 里不额外利用它——**上游怎么包的，btree 内部原样**，这正是要测的。
 
-### 4.2 ⚠️ 实现前必须先定夺的语义缺口
+### 4.2 ⚠️ 语义缺口 —— 已定案（选 1）并落地
 
-**`sqlite3OomClear` 在 btreelite 没有任何调用点**（上游是 `sqlite3ApiExit` 在每个
-公共 API 出口清除）。当前行为：某连接一旦 NOMEM，`mallocFailed` 粘滞，该连接基本
-报废（可 close + 重开，但连接内不恢复）。两个选法（影响 fuzz oracle 怎么写）：
+确定性的故障分配器探针（§4.1 机制 + OOM_FAIL_AT 逐点注入）查明了**真实行为**：
 
-- **选 1（推荐）**：移植 OOM 清理——commit/rollback/各查询出口在 rc 传播时
-  `OomClear`（或至少 rollback/close 前清理 lookaside 禁态）。oracle 变成
-  "NOMEM 之后连接可继续用或至少可干净关闭"；
-- **选 2**：维持粘滞，把"NOMEM 后该连接只允许 close"写进头文件契约，fuzz oracle
-  按此建模（连接在 OOM 后进入"僵尸态"，后续动作一律吞掉）。
+1. **存储主路径（btree/pager/wal/pcache/memjournal）全部经无连接的全局分配器**
+   （`sqlite3DbMalloc*` 的调用面只有 db=0 的 schema/pathname 两处），
+   `mallocFailed` **从不被主路径置位**——§4.2 设想的"连接级粘滞报废"在
+   btreelite 中不存在，选 2 的僵尸态无东西可建模；
+2. 注入失败沿 **纯 rc 传播**：各注入点报其所在层的码（NOMEM/IOERR_NOMEM/
+   cursor_open 的 NOMEM），之后调用**自愈**；命中 `sqlite3BtreeCursor`
+   分配失败时该次 `cursor_open` 返回 NOMEM 且不留半初始化游标；
+3. 上游对齐保险已落地（选 1 形态）：`btreelite_api.c` 每个公共 rc 出口经
+   `apiExit()`——连接 `mallocFailed` 置位或 rc==SQLITE_IOERR_NOMEM（journal/shm
+   层的无连接分配失败）时 `sqlite3OomClear()` 清粘滞（lookaside 禁用计数
+   回退）并统一报 `BTREELITE_NOMEM`；errMask 折叠不移植（BTREELITE 码域
+   超 8 位：BUSY_SNAPSHOT=517、DONE=101）；
+4. 探针顺带修了两个真缺陷：**EnableLookaside 宏误移植为 ++**（应为 --），
+   以及 **btreelite_open 在 env.aDb/mutex 分配失败时的空指针解引用**
+   （成功路径 env.aDb[0] 直接踩 NULL）——后者对 `btreelite_open` 的契约
+   更新 = OOM 下 open 以 NOMEM(7) 失败，不留半初始化句柄。
 
-无论选哪个，oracle 的**不变式都在**：OOM 期间已提交的数据（模型快照）
-在 close+reopen 后逐字节存在。
+**Cursor 侧契约**（沿用 btreelite.h 既有段）：注入命中的游标操作按 rc 传播
+失败；`btreelite_cursor_open` 失败不留对象（失败路径已解链——该 UAF 也是
+本批修复的）；游标对象本身不会进入"永久报错"态（FAULT 只来自结构破坏面）。
+
+**不变式（不变）**：OOM 期间已提交的数据在 close+reopen 后逐字节存在，
+integrity_check 0 错误；失败的事务被 close 自动回滚。
 
 ### 4.3 Oracle
 
 ```text
-动作 = Target A 全集 + 每条动作携带"注入概率表"（来自输入流）
+动作 = Target A 全集动作流；流首字节 K = 故障分配器的周期（K<2 = 无注入，
+即纯模型-引擎回归 pass；K>=2 = 每第 K 次分配失败一次）
 
-  rc ∈ {契约集 ∪ NOMEM}；NOMEM 之后：选1 → 继续按 A 跑；选2 → 强制 close
-  终态: close+reopen 全句柄 → committed 模型逐字节在（包括 OOM 发生前最后一次 commit）
-  integrity_check 必须 0 错误（OOM 不许留半截树）
+  rc ∈ {契约集 ∪ BTREELITE_NOMEM}；NOMEM 之后连接继续可用（选 1）
+  镜像推进只在可验证成功上：失败的动作不动 DB 与模型；
+  失败的游标操作把该游标置 TRIPPED（位置未知，一步重落地）
+  journal-mode 动作在注入活跃期跳过（半程转换报值码不报 rc，
+  留给后续契约细化）
+  终态(注入关闭后执行): 对每个存活 file 句柄 close+reopen →
+  committed 模型逐字节在（正向+反向 scan）+ integrity_check 0 错误
 ```
 
 ---
 
-## 5. Target D：白盒深层（低优先，可选）
+## 5. Target D：白盒深层（低优先，可选）—— ⬜ 未立项
 
 t_savepos 已建的模式推广：绕过公共 API，用内部头直接驱动 `BtCursor` 的
 `BTREE_SAVEPOSITION`、biasRight 组合、`KvMoveto(0,·)` 边界、
@@ -312,7 +354,8 @@ t_savepos 已建的模式推广：绕过公共 API，用内部头直接驱动 `B
 
 ---
 
-## 6. Target E：并发争用（P2，小而便宜）
+## 6. Target E：并发争用（P2，小而便宜）—— ✅ 已交付（P1；fuzz/target_e.c +
+> fuzz/fz_e + fuzz/eseeds/；harness 五条模型假设的修复记录见文末附录）
 
 ```text
   双 handle 同一文件（WAL 必开）：
@@ -324,7 +367,7 @@ t_savepos 已建的模式推广：绕过公共 API，用内部头直接驱动 `B
   （跨进程争用已有 t_proc 钉着；E 是它的持续 fuzz 化，非必须先行）
 ```
 
-### 6.1 进程级 kill fuzz（并入 B 的 harness 变体）
+### 6.1 进程级 kill fuzz（并入 B 的 harness 变体）—— ⬜ 未立项
 
 写循环脚本化 kill -9（t_dur 的持续化）：每轮用**不同 kill 时机**（commit 前、
 checkpoint 中、SetVersion 中、CloseWal 中——用 set_interrupt/长 value 控制
@@ -335,21 +378,29 @@ kill 窗口宽度）。oracle 同 t_dur（前缀完整）+ 累积轮数计数。
 ## 7. 交付物布局与构建
 
 ```text
-fuzz/
-  drv.c / drv.h          动作流解码 + 分布 + xorshift（两个 target 共用）
+fuzz/  （✅ 全部就位）
+  drv.c / drv.h          动作流解码 + 分布 + xorshift（各 target 共用）
   model.c / model.h      内存模型 + 深拷贝快照（savepoint/committed）
-  target_api.c           Target A 主 harness（libFuzzer 入口 = 同一个 LLVMFuzzerTestOneInput）
-  target_file.c          Target B harness（语料 = db/wal/shm 三件套 tar 或目录约定）
-  target_oom.c           Target C harness
-  fuzz_replay.c          确定性回放 main()（读 corpus 目录，逐文件调 OneInput）
-  seeds/                 Target A 动作流种子（检入 git，都是 <2KB 的字节流）
-  file.dict              Target B 字典
-  corpus/                libFuzzer 运行时动态生长（不检入；CI 内 cache 传递）
-Makefile（新增）:
-  fuzz-seeds     确定性再生成 B 的语料文件
-  fuzz           无依赖回放（= fuzz_replay 跑全部 seeds；并入 CI/测试链的入口）
-  fuzz-libfuzzer 编 fuzzer 版（-fsanitize=fuzzer,address,undefined）
-  fuzz-fuzz      实际 fuzz 运行封装（-jobs=N -max_total_time…）
+  target_api.c           Target A 主 harness（入口 btreeliteFuzzOneInput）
+  target_file.c          Target B harness（对 mkfiles 生成的三件套做变异流）
+  target_e.c             Target E harness（双句柄争用）
+  target_oom.c           Target C harness（注入分配器 + NOMEM 容错 oracle）
+  wrap.c / wrap_file.c / wrap_e.c / wrap_oom.c
+                         各 target 的 libFuzzer 适配层（每链接一个）
+  fuzz_replay.c          确定性回放 main()（按目录名分派 target，每文件跑两遍）
+  seeds/                 Target A 动作流种子 28 条（检入 git）
+  fileseeds/             Target B 变异流 12 条（检入）
+  eseeds/                Target E 争用流 6 条（检入）
+  oomseeds/              Target C 注入流 5 条（检入；流首字节 = K）
+  files/                 Target B 基础三件套（运行时再生，不入库）
+  file.dict              文件格式字典（四个战役共用 -dict）
+  corpus/                libFuzzer 运行时动态生长（不检入；战役写回收尾清理）
+Makefile:
+  fuzz-seeds     mkseeds 再生成 A/C 语料；fuzz-files mkfiles 再生成 B 基础
+  fuzz           无依赖回放（fuzz_replay 跑全部 seeds；= CI/测试链入口）
+  fuzz-libfuzzer 编 fuzzer 版（ASan-only；UBSan 与 libFuzzer 不共链）
+  fz_api/fz_file/fz_e/fz_oom   四个战役二进制（各自 wrap + 共享 drv/model）
+  cov            覆盖率构建与报告（llvm-profdata/llvm-cov → cov/coverage.txt）
 ```
 
 编译 flag 固定：`-O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer`
@@ -400,9 +451,12 @@ Makefile（新增）:
 | src/os.c | 160 | 69.63% | 44.83% |
 | src/os_unix.c（VFS 未用路径多） | 3153 | 43.41% | 30.23% |
 
-fuzz harness 自身：target_api 87.17%、target_e 87.17%、target_file 79.92%
-（行）。未覆盖集中处 = S5（溢出链 balance/deFreeList 深支）、S8/S9（shm
-多页与 checkpoint 子类型）、S6（深保存点交错）、S12（OOM 尚未建）。
+fuzz harness 自身（行）：target_api 87.17%、target_e 87.17%、target_file
+79.92%、target_oom —— 见 cov/coverage.txt（cov_replay 对 oomseeds 的
+计数归零问题待查，属报告侧而非语料侧——`make fuzz` 的 51 流回放全绿）。
+**未覆盖集中处（= Target D / P4 组合的立项理由）**：S5（溢出链
+balance/deFreeList 深支）、S8/S9（shm 多页与 checkpoint 子类型）、
+S6（深保存点交错）。S12（OOM）已由 Target C 覆盖。
 
 **测量（历史设计稿）**：`-fsanitize-coverage=edge,indirect-calls` + `%SANITIZER_COV` 报告，
 聚焦函数白名单（§1 S1–S10 全部函数名）。基线：当前 t_* 体系对 KV 主路径覆盖已高
@@ -410,13 +464,13 @@ fuzz harness 自身：target_api 87.17%、target_e 87.17%、target_file 79.92%
 
 **阶段**（每阶段以"连续 N 小时无新 crasher + 覆盖率不再涨"为停）：
 
-| 阶段 | target | 依赖 | 预估 |
+| 阶段 | target | 依赖 | 状态 |
 |---|---|---|---|
-| P0 | A（:memory:） | 骨架 + 模型 | 1 天（含语料/契约表） |
-| P1 | A（file flavor）+ E | — | 0.5 天 |
-| P2 | B（敌意文件）+ seeds | seed 生成器 | 1 天 |
-| P3 | C（OOM） | §4.2 语义先定 | 0.5 天 |
-| P4 | A+B 组合、D（白盒缺口） | — | 视情况 |
+| P0 | A（:memory:） | 骨架 + 模型 | ✅ 已交付 |
+| P1 | A（file flavor）+ E | — | ✅ 已交付 |
+| P2 | B（敌意文件）+ seeds | seed 生成器 | ✅ 已交付 |
+| P3 | C（OOM） | §4.2 语义定案后落地 | ✅ 已交付（选 1，target_oom/fz_oom） |
+| P4 | A+B 组合（§3.4）、D（白盒缺口） | 覆盖率缺口清单（§9 基线） | ⬜ 未立项 |
 
 **CI 约定**：`make test`（含 seeds 回放，秒级）每次提交跑；libFuzzer 长跑
 （`-max_total_time=3600 -jobs=8`）夜间跑。
@@ -525,13 +579,14 @@ fuzz harness 自身：target_api 87.17%、target_e 87.17%、target_file 79.92%
 > ——损坏文件可让引擎从任何探针返回其错误族的任何成员（含 WAL 恢复失败
 > 的锁族码）；唯一违例 = 不返回（挂）、信号、或 sanitizer 报告。
 
-1. **mallocFailed 粘滞**（§4.2）——选 1（移植清除）或选 2（文档化僵尸态）。
-   影响的是 Target C 的 oracle 与一处头文件契约；建议选 1，
-   顺带这本身就是一次"上游清理链路重建"。
-2. ** :memory: = fuzz 主形态**——99% 的迭代用内存库（速度快，journal 固定 MEMORY）
+1. **mallocFailed 粘滞**（§4.2）——✅ **已定案：选 1 落地**（探针查明主路径
+   无连接级分配、粘滞不会发生；apiExit 出口清粘滞为上游对齐保险；详见 §4.2
+   定案记录）。
+2. ** :memory: = fuzz 主形态**（照办：A/C 都以内存句柄为主）——99% 的迭代用内存库（速度快，journal 固定 MEMORY）
    + Target A 文件 flavor 与 Target B 负责 WAL/journal 切换面。
    这样 B 的语料库不必每次迭代都落盘。
-3. **语料检入策略**——动作流种子（KB 级）检入；文件语料（>64KB 的 deep/bigval）
-   由 `make fuzz-seeds` 现场再生。repro 一律检入（最小化后通常 <1KB）。
+3. **语料检入策略**（已按此执行）——动作流种子检入（A 28 条 / B 12 条 /
+   E 6 条 / C 5 条）；deep/bigval 基础文件由 `make fuzz-files` 现场再生。
+   repro 一律检入（最小化后 <1KB）。
 
 ——设计完毕。

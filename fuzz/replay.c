@@ -18,9 +18,14 @@ int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *zName);
 int btreeliteFuzzFileOneInput(const uint8_t *a, size_t n, const char *zName);
 int btreeliteFuzzEOneInput(const uint8_t *a, size_t n, const char *zName);
 
-/* The directory name picks the target: "fileseeds" = Target B (hostile
-** files, needs fuzz/files/ regenerated first), "eseeds" = Target E
-** (contention), anything else = Target A. */
+/* The directory name picks the target: "oomseeds" = Target C (OOM
+** injection; the stream's first byte is the K of the faulting
+** allocator), "fileseeds" = Target B (hostile files, needs
+** fuzz/files/ regenerated first), "eseeds" = Target E (contention),
+** anything else = Target A.  The dispatch peeks full tags in the order
+** shown: "oomseeds" is checked first, and note "fileseeds" contains
+** "eseeds" as a substring, which is why Target B is checked before
+** Target E. */
 static const char *zDirTag;
 
 static int runFile(const char *zPath, const char *zName, uint32_t *pnChk){
