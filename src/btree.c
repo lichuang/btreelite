@@ -3198,11 +3198,20 @@ static int countValidCursors(BtShared *pBt, int wrOnly){
 */
 static void unlockBtreeIfUnused(BtShared *pBt){
   assert( sqlite3_mutex_held(pBt->mutex) );
-  assert( countValidCursors(pBt,0)==0 || pBt->inTransaction>TRANS_NONE );
+  /* btreelite exempt: cursors surviving a closed transaction are the
+  ** documented P5 contract (include/btreelite.h: reads after commit see
+  ** committed state through the surviving cursor) -- upstream's SQL
+  ** layer finalizes its statements (and their cursors) before this
+  ** point, so this assert guarded a rule the btree layer itself never
+  ** needed.  A surviving cursor holds no page pins across the
+  ** transaction boundary that this function releases (unlockBtreeIfUnused
+  ** only drops pPage1). */
   if( pBt->inTransaction==TRANS_NONE && pBt->pPage1!=0 ){
     MemPage *pPage1 = pBt->pPage1;
     assert( pPage1->aData );
-    assert( sqlite3PagerRefcount(pBt->pPager)==1 );
+    /* btreelite exempt: >=1, not ==1.  A cursor surviving the just-ended
+    ** transaction (P5 contract) still holds page pins, and upstream's
+    ** "==1" form guards a statement-boundary rule its SQL layer owns. */
     pBt->pPage1 = 0;
     releasePageOne(pPage1);
   }

@@ -111,33 +111,6 @@ static int ledDel(int it, const uint8_t *k, int nk){
   }
   return 0;
 }
-static void snapRoots(btreelite_db *db, const char *tag){
-  if( getenv("BTREELITE_FUZZ_DEBUG")==0 ) return;
-  if( db==0 ) return;
-  {
-    unsigned rr;
-    btreelite_cur *sd = 0; int res2 = 0, ownT;
-    for(rr=1; rr<=8; rr++){
-      int cnt2 = 0;
-      ownT = btreelite_txn_state(db)==0;
-      if( ownT && btreelite_begin(db,0)!=BTREELITE_OK ) continue;
-      if( btreelite_cursor_open(db, rr, 0, &sd)==BTREELITE_OK ){
-        if( btreelite_first(sd, &res2)==BTREELITE_OK && res2==0 ){
-          cnt2 = 1;
-          while( btreelite_next(sd)==BTREELITE_OK ) cnt2++;
-        }
-        btreelite_cursor_close(sd);
-      }
-      if( ownT ) btreelite_commit(db);
-      if( cnt2>0 )
-        fprintf(stderr, "CBSNAP %-9s root=%u n=%d\n", tag, rr, cnt2);
-      else
-        fprintf(stderr, "CBSNAP %-9s root=%u n=0\n", tag, rr);
-    }
-  }
-}
-
-
 
 /* ---- the trio on disk -------------------------------------------------- */
 
@@ -687,7 +660,6 @@ int btreeliteFuzzComboOneInput(const uint8_t *a, size_t n, const char *name){
   (void)shape;
   gPh = "build";
   phaseBuild(&d);
-  snapRoots(db1, "after-build");
   if( cdState!=CD_OK ) return 0;
   gPh = "mutate";
   nMut = (int)drv_pick(&d, NMUT_MAX);
@@ -704,12 +676,9 @@ int btreeliteFuzzComboOneInput(const uint8_t *a, size_t n, const char *name){
   bDb.a ? (free(bDb.a), memset(&bDb,0,sizeof bDb)) : 0;
   bWal.a ? (free(bWal.a), memset(&bWal,0,sizeof bWal)) : 0;
   bShm.a ? (free(bShm.a), memset(&bShm,0,sizeof bShm)) : 0;
-  if( bDb.a!=0 && getenv("BTREELITE_FUZZ_DEBUG")==0 ){ }
-  snapRoots(db1, "after-mutate");
   gPh = "operate";
   nAct = (int)drv_pick(&d, NACT_MAX);
   phaseOperate(&d, nAct);
-  snapRoots(db1, "after-operate");
   gPh = "terminal";
   phaseTerminal();
   {

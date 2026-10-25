@@ -129,3 +129,4 @@ bench_sql
 examples/kv_demo
 examples/txn_demo
 examples/tree_demo
+fuzz/*seeds/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*
