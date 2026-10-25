@@ -168,7 +168,8 @@ FUZZ_HARNESS_OBJS = fuzz/obj/drv.o fuzz/obj/model.o fuzz/obj/target_api.o \
                     fuzz/obj/mkseeds.o fuzz/obj/replay.o fuzz/obj/wrap.o \
                     fuzz/obj/mkfiles.o fuzz/obj/target_file.o fuzz/obj/wrap_file.o \
                     fuzz/obj/target_e.o fuzz/obj/wrap_e.o \
-                    fuzz/obj/target_oom.o fuzz/obj/wrap_oom.o
+                    fuzz/obj/target_oom.o fuzz/obj/wrap_oom.o \
+                    fuzz/obj/target_combo.o fuzz/obj/wrap_combo.o
 $(FUZZ_HARNESS_OBJS): fuzz/obj/%.o: fuzz/%.c fuzz/obj
 	$(CC) $(FUZZ_SAN) -c $< -o $@
 
@@ -194,8 +195,9 @@ FUZZZ_A = fuzz/objz/wrap.o fuzz/objz/drv.o fuzz/objz/model.o \
           fuzz/objz/target_api.o
 FUZZZ_E = fuzz/objz/wrap_e.o fuzz/objz/target_e.o
 FUZZZ_C = fuzz/objz/wrap_oom.o fuzz/objz/target_oom.o
+FUZZZ_X = fuzz/objz/wrap_combo.o fuzz/objz/target_combo.o
 FUZZZ_ALL = fuzz/objz/wrap_file.o fuzz/objz/target_file.o $(FUZZZ_E) \
-            $(FUZZZ_C) $(FUZZZ_A)
+            $(FUZZZ_C) $(FUZZZ_X) $(FUZZZ_A)
 $(FUZZZ_ALL): fuzz/objz/%.o: fuzz/%.c fuzz/objz
 	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer-no-link -c $< -o $@
 
@@ -225,6 +227,12 @@ fuzz/fz_oom: fuzz/objz/wrap_oom.o fuzz/objz/target_oom.o \
 		fuzz/objz/wrap_oom.o fuzz/objz/target_oom.o \
 		fuzz/objz/drv.o fuzz/objz/model.o $(FUZZZLIB_O)
 
+fuzz/fz_combo: fuzz/objz/wrap_combo.o fuzz/objz/target_combo.o \
+               fuzz/objz/drv.o fuzz/objz/model.o $(FUZZZLIB_O)
+	$(CC) $(FUZZ_FZZ_SAN) -fsanitize=fuzzer -o $@ \
+		fuzz/objz/wrap_combo.o fuzz/objz/target_combo.o \
+		fuzz/objz/drv.o fuzz/objz/model.o $(FUZZZLIB_O)
+
 # ---- Target B: hostile-file fuzzing (fuzz/target_file.c) ---------------
 # Its bases (fuzz/files/) are regenerated per run; the mutation streams
 # (fuzz/fileseeds/) are checked in.
@@ -236,29 +244,33 @@ fuzz-files: fuzz/mkfiles
 
 fuzz/fuzz_replay: fuzz/obj/replay.o fuzz/obj/drv.o fuzz/obj/model.o \
                  fuzz/obj/target_api.o fuzz/obj/target_file.o \
-                 fuzz/obj/target_e.o fuzz/obj/target_oom.o fuzz/libbt_fz.a
+                 fuzz/obj/target_e.o fuzz/obj/target_oom.o \
+                 fuzz/obj/target_combo.o fuzz/libbt_fz.a
 	$(CC) $(FUZZ_SAN) -o $@ fuzz/obj/replay.o fuzz/obj/drv.o \
 		fuzz/obj/model.o fuzz/obj/target_api.o fuzz/obj/target_file.o \
-		fuzz/obj/target_e.o fuzz/obj/target_oom.o fuzz/libbt_fz.a
+		fuzz/obj/target_e.o fuzz/obj/target_oom.o \
+		fuzz/obj/target_combo.o fuzz/libbt_fz.a
 
 fuzz: fuzz-seeds fuzz-files fuzz/fuzz_replay
-	./fuzz/fuzz_replay fuzz/seeds fuzz/fileseeds fuzz/eseeds fuzz/oomseeds
+	./fuzz/fuzz_replay fuzz/seeds fuzz/fileseeds fuzz/eseeds \
+		fuzz/oomseeds fuzz/combseeds
 
 
 
 fuzz-libfuzzer: fuzz-seeds fuzz-files fuzz/fz_api fuzz/fz_file fuzz/fz_e \
-                fuzz/fz_oom
+                fuzz/fz_oom fuzz/fz_combo
 	@echo "libFuzzer binaries ready:"
 	@echo "  ./fuzz/fz_api  fuzz/seeds     -jobs=4 -dict=fuzz/file.dict -max_total_time=3600"
 	@echo "  ./fuzz/fz_file fuzz/fileseeds -jobs=4 -dict=fuzz/file.dict -max_total_time=3600"
 	@echo "  ./fuzz/fz_e    fuzz/eseeds    -jobs=4 -dict=fuzz/file.dict -max_total_time=3600"
 	@echo "  ./fuzz/fz_oom  fuzz/oomseeds  -jobs=4 -dict=fuzz/file.dict -max_total_time=3600"
+	@echo "  ./fuzz/fz_combo fuzz/combseeds -jobs=4 -dict=fuzz/file.dict -max_total_time=3600"
 
 clean-fuzz:
 	rm -rf fuzz/srclib fuzz/srclibz fuzz/obj fuzz/objz fuzz/libbt_fz.a \
 	       fuzz/mkseeds fuzz/mkfiles fuzz/fuzz_replay fuzz/fz_api \
-	       fuzz/fz_file fuzz/fz_e fuzz/fz_oom fuzz/files fuzz/fileseeds \
-	       fuzz/eseeds fuzz/oomseeds
+	       fuzz/fz_file fuzz/fz_e fuzz/fz_oom fuzz/fz_combo fuzz/files \
+	       fuzz/fileseeds fuzz/eseeds fuzz/oomseeds fuzz/combseeds
 
 # ---- Coverage report (docs/fuzz-design.md 9) ---------------------------
 # cov        build coverage-instrumented engine archive, the nine test
@@ -292,12 +304,13 @@ cov/objs:
 	mkdir -p cov/objs
 
 COVHARNESS_O = fuzz/replay.c fuzz/drv.c fuzz/model.c fuzz/target_api.c \
-               fuzz/target_file.c fuzz/target_e.c fuzz/target_oom.c
+               fuzz/target_file.c fuzz/target_e.c fuzz/target_oom.c \
+               fuzz/target_combo.c
 cov/cov_replay: $(COVHARNESS_O) cov/libbt_cov.a cov/objs
 	$(CC) $(COV_SAN) -Isrc -o $@ \
 		fuzz/replay.c fuzz/drv.c fuzz/model.c fuzz/target_api.c \
 		fuzz/target_file.c fuzz/target_e.c fuzz/target_oom.c \
-		cov/libbt_cov.a
+		fuzz/target_combo.c cov/libbt_cov.a
 
 cov: fuzz-files cov/libbt_cov.a $(COVTESTBINS) cov/cov_replay
 	rm -rf cov/prof cov/coverage.txt
@@ -319,7 +332,8 @@ cov: fuzz-files cov/libbt_cov.a $(COVTESTBINS) cov/cov_replay
 		-object cov/t_wal -object cov/t_api -object cov/t_proc \
 		-object cov/t_dur -object cov/t_trees -object cov/t_savepos \
 		$(SOURCES:%=src/% fuzz/target_api.c fuzz/target_file.c \
-		fuzz/target_e.c fuzz/target_oom.c fuzz/replay.c) > cov/coverage.txt
+		fuzz/target_e.c fuzz/target_oom.c fuzz/target_combo.c \
+		fuzz/replay.c) > cov/coverage.txt
 	@echo "coverage report written to cov/coverage.txt"
 
 

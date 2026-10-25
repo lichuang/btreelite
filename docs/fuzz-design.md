@@ -12,8 +12,11 @@
 > | Target C（OOM 注入，选 1 语义，P3） | ✅ 已交付 |
 > | Target E（双句柄争用，P1） | ✅ 已交付 |
 > | 基建：file.dict / make cov 覆盖率 / 双引擎 Makefile | ✅ |
-> | P4：A+B 组合（§3.4 损坏文件上跑动作流） | ⬜ 未立项 |
+> | P4：A+B 组合 | ✅ 已交付 v1（target_combo + fz_combo + combseeds×3；
+>   结构 oracle：不崩/可返回/integrity 可终止；ledger 内容对账留作
+>   open item——见 §3.4 的 v1 注） |
 > | Target D：白盒深层（§5） | ⬜ 未立项（触发条件见 §5） |
+> | Combo harness：phase-3 账目对账的精确化（演化流下仍误报） | ⬜ open item |
 > | Target C 内：注入活跃期的 journal-mode 动作契约（§4.3 跳过项） | ⬜ 待细化 |
 > | SQLITE_DEBUG 构建修复（sizeof(Schema) + os_unix 裁剪符号） | ⬜ 挂起 |
 > | 进程级 kill fuzz（§6.1，并入 B 的 harness 变体） | ⬜ 未立项 |
@@ -268,12 +271,25 @@ API 重新打开损坏文件组:（不得 crash / hang / ASan 报 / 泄漏；han
 
 （关键设计点：**不**承诺"损坏必报 CORRUPT"——上游也不承诺；承诺的是**UB 不存在**。)
 
-### 3.4 与 Target A 的组合（进阶，P4）—— ⬜ 未立项
+### 3.4 与 Target A 的组合（进阶，P4）—— ✅ 已交付 v1（`fuzz/target_combo.c`
+> + `fuzz/wrap_combo.c` + `fuzz/fz_combo` + `fuzz/combseeds/`×3）
 >
-> **现状**：Target B 已交付的是 reopen-only oracle（损坏文件重开+探针合法集）；
-> "变异文件上继续跑完整状态化 API 动作流"（模型不可知的组合面）仍在本表之外，
-> 是剩余两项 P4 工作之一。复用面 = mkfiles 基座 + target_api 动作流 + file.dict，
-> 无语义决策待定。
+> **v1 结构**（四相位，单进程）：build（公共 API 造合法三件套 + ledger）→
+> mutate（close 后载入三件套、按流应用 0..11 个 Target B 变异器、写回）→
+> operate（重开损坏文件、跑放松口径的状态化动作：begin/commit/rollback/
+> savepoint/create/put/del/seek/checkpoint/integrity——**rc 一律合法**，提交
+> 成功才记 ledger、失败即回滚）→ terminal（关闭重开后：整文件 + 每根的
+> integrity 检查；每树的**集合式比对** = 引擎键序的每条目 ledger 查键值 +
+> 计数对账，含 crash-时的诊断 dump——**结果只记录不裁决**）。
+>
+> **实现期钉住的组合面事实**：树根号 = create_tree 返回的"下一个空闲页"，
+> 不可预知（胖树 0 下树 1 = root 5 而非 3，固定映射造成过假 diverge）；
+> 键的构造必须全字节确定（snprintf 截断后的栈垃圾参与比较、账目脱同步）。
+>
+> **open item = ledger 内容对账的精确化**：phase-3 在损坏树上的写记账
+> （PUT/DEL 的 OK 判定与提交语义）在演化流下仍有边角（观测到"engine-only"
+> 键的若干形状），现以 dump 记录、不裁决；精确化后恢复"零变异输入强制
+> 对账"的裁决位。
 
 变异 → open 成功 → 继续状态化 API 操作（模型=未知，只查 rc 合法集 + integrity 不崩）。
 libFuzzer 天然会把这两段串成一次输入，Target B 的 harness 内嵌 Target A 的解码器即可。
@@ -470,7 +486,8 @@ S6（深保存点交错）。S12（OOM）已由 Target C 覆盖。
 | P1 | A（file flavor）+ E | — | ✅ 已交付 |
 | P2 | B（敌意文件）+ seeds | seed 生成器 | ✅ 已交付 |
 | P3 | C（OOM） | §4.2 语义定案后落地 | ✅ 已交付（选 1，target_oom/fz_oom） |
-| P4 | A+B 组合（§3.4）、D（白盒缺口） | 覆盖率缺口清单（§9 基线） | ⬜ 未立项 |
+| P4 | A+B 组合（§3.4） | — | ✅ 已交付 v1（对账精确化 = open item） |
+| P4b | D（白盒缺口） | 覆盖率缺口清单 | ⬜ 未立项 |
 
 **CI 约定**：`make test`（含 seeds 回放，秒级）每次提交跑；libFuzzer 长跑
 （`-max_total_time=3600 -jobs=8`）夜间跑。

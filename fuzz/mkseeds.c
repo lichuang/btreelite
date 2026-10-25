@@ -404,6 +404,61 @@ int main(void){
   commitT(0);
   flush("s28-journal-roundtrip");
 
+  /* Target P4 combo seeds (fuzz/combseeds/): phase-stream bytes only;
+  ** the combo harness consumes shape/mutator/action bytes phase by phase. */
+  mkdir("fuzz/combseeds", 0777);
+  { static uint8_t cbuf[1<<14];
+    static size_t cn;
+    #define cok(o) cbuf[cn++] = (uint8_t)(o)
+    #define cflush2(nm2) do{ \
+      char cp2[256]; FILE *cf; \
+      snprintf(cp2, sizeof cp2, "fuzz/combseeds/%s.bin", nm2); \
+      cf = fopen(cp2, "wb"); \
+      if( cf==0 ){ fprintf(stderr, "mkseeds: cannot write %s\n", cp2); exit(1); } \
+      fwrite(cbuf, 1, cn, cf); fclose(cf); cn = 0; }while(0)
+    /* c01: two trees, moderate mutations, savepoint + checkpoint ops */
+    sb(0xc1c1c1c1c1c1c1c1ULL);
+    { int i2;
+      for(i2=0;i2<30;i2++) cok((i2*7)+2);
+      for(i2=0;i2<4;i2++) cok(1 + (i2*3)%11);
+      cok(3); cok(1);
+      cok(7);
+      cok(11); cok(6); cok(9);
+      cok(11); cok(3); cok(20);
+      cok(4);
+      cok(21); cok(3);
+      cok(26); cok(0);
+      cok(6); cok(0); cok(1);
+      cok(4);
+    }
+    cflush2("c01-two-tree-mut4");
+    sb(0xc2c2c2c2c2c2c2c2ULL);
+    { int i2;
+      for(i2=0;i2<24;i2++) cok((i2*11)+3);
+      for(i2=0;i2<6;i2++) cok(1 + (i2*5)%11);
+      cok(3); cok(1);
+      cok(7);
+      for(i2=0;i2<8;i2++){ cok(11); cok(30); cok(200); }
+      cok(4);
+      cok(21); cok(0);
+      cok(26); cok(1);
+      cok(5); cok(1); cok(5); cok(1);
+      cok(4);
+    }
+    cflush2("c02-trunc-mut6");
+    sb(0xc3c3c3c3c3c3c3c3ULL);
+    { int i2;
+      for(i2=0;i2<20;i2++) cok((i2*13)+5);
+      for(i2=0;i2<4;i2++) cok(8 + (i2%2)*1);
+      for(i2=0;i2<8;i2++){ cok(3); cok(1); cok(11); cok(10); cok(4); }
+      cok(21); cok(2);
+      cok(26); cok(0);
+    }
+    cflush2("c03-walmut-operate8");
+    #undef cok
+    #undef cflush2
+  }
+
   /* ---- Target C seeds (fuzz/oomseeds/) ----------------------------- */
   /* Stream = [K byte][8B seed][Target A action ops]; K<2 disables the
   ** injections (plain model-vs-engine pass), K>=2 fails every K-th
