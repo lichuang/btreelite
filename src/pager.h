@@ -191,7 +191,8 @@ int sqlite3PagerSharedLock(Pager *pPager);
   int sqlite3PagerCheckpoint(Pager *pPager, sqlite3*, int, int*, int*);
   int sqlite3PagerWalSupported(Pager *pPager);
   int sqlite3PagerWalCallback(Pager *pPager);
-  int sqlite3PagerOpenWal(Pager *pPager, int *pisOpen);
+  int sqlite3PagerWalObjectExists(Pager*);
+int sqlite3PagerOpenWal(Pager *pPager, int *pisOpen);
   int sqlite3PagerCloseWal(Pager *pPager, sqlite3*);
 # ifdef SQLITE_ENABLE_SNAPSHOT
   int sqlite3PagerSnapshotGet(Pager*, sqlite3_snapshot **ppSnapshot);

@@ -473,7 +473,10 @@ int btreeliteFuzzOneInput(const uint8_t *a, size_t n, const char *name){
         for(i=0; i<NCUR; i++)
           if( cs[i].live && cs[i].h==(int)hb ){
             btreelite_cursor_close(cs[i].b);
-            cs[i].live = 0;
+            /* btreelite_close below would auto-close any surviving cursor
+            ** and free it; a live=0 slot must not keep the pointer or a
+            ** later sweep walks freed memory (ASan UAF in resetAll) */
+            memset(&cs[i], 0, sizeof(Cur));
           }
       }
       btreelite_close(h->db);

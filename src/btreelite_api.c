@@ -514,8 +514,15 @@ int btreelite_journal_mode(btreelite_db *p, int eMode){
   ** header, read-mark table) so the following transactions start from
   ** something real. */
   if( eMode==BTREELITE_JOURNAL_WAL ){
-    int isOpen = 0;
-    rc = sqlite3PagerOpenWal(pPager, &isOpen);
+    /* pbOpen passed as 0, the form upstream's journal-mode pragma uses:
+    ** the out-parameter form asserts a PAGER_READER state which a
+    ** no-transaction caller does not have.  Upstream's own assert also
+    ** requires no existing WAL object, and a lazy open on the first
+    ** shared lock may already have built one -- so only open when it is
+    ** really absent (idempotent, matching OpenWal's own guard). */
+    if( sqlite3PagerWalObjectExists(pPager)==0 ){
+      rc = sqlite3PagerOpenWal(pPager, 0);
+    }
     if( rc!=SQLITE_OK ){
       return sqlite3PagerGetJournalMode(pPager);
     }

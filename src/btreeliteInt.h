@@ -925,6 +925,10 @@ struct Db {
 ** a blob whose size is supplied by the caller.  Keep a forward reference
 ** so btree.c compiles; the SQL layer's real Schema is gone. */
 typedef struct Schema Schema;
+/* The btree layer never touches the schema blob (btreelite has no SQL
+** layer and every caller passes nBytes==0); this minimal complete shape
+** only satisfies sizeof(Schema) in a SQLITE_DEBUG assert. */
+struct Schema { int unused_schema_pad; };
 
 /*
 ** sqlite3.h.in also defines these limits; btreelite keeps them as

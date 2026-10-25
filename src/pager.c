@@ -2025,9 +2025,22 @@ static int pager_end_transaction(Pager *pPager, int hasSuper, int bCommit){
     if( rc==SQLITE_NOTFOUND ) rc = SQLITE_OK;
   }
 
-  if( !pPager->exclusiveMode
-   && (!pagerUseWal(pPager) || sqlite3WalExclusiveMode(pPager->pWal, 0))
-  ){
+  /* btreelite: the WAL branch above ends this connection's WAL read
+  ** transaction together with the write lock, so the read lock is -1 at
+  ** this point and upstream's ExclusiveMode(0) read-lock re-acquisition
+  ** would fail its own invariant; a commit/rollback through the btree
+  ** layer is followed by pagerSharedLock() re-deriving the reader state
+  ** (statement boundaries upstream), so stepping the file lock straight
+  ** down to SHARED without re-acquiring the mark is correct here. */
+  if( pPager->exclusiveMode
+   || (pagerUseWal(pPager) && pPager->eState==PAGER_OPEN) ){
+    /* exclusive mode, or a WAL transaction just ended: no mark to
+    ** re-acquire, the shared step-down alone */
+    if( !pPager->exclusiveMode ){
+      rc2 = pagerUnlockDb(pPager, SHARED_LOCK);
+    }
+  }else if( !pagerUseWal(pPager)
+            || sqlite3WalExclusiveMode(pPager->pWal, 0) ){
     rc2 = pagerUnlockDb(pPager, SHARED_LOCK);
   }
   pPager->eState = PAGER_READER;
@@ -7324,6 +7337,12 @@ static int pagerOpenWal(Pager *pPager){
 ** the WAL file is already open, set *pbOpen to 1 and return SQLITE_OK
 ** without doing anything.
 */
+/* btreelite api reads whether the WAL object already exists (the
+** journal-mode transition guards its eager open on it). */
+int sqlite3PagerWalObjectExists(Pager *pPager){
+  return pPager->pWal!=0;
+}
+
 int sqlite3PagerOpenWal(
   Pager *pPager,                  /* Pager object */
   int *pbOpen                     /* OUT: Set to true if call is a no-op */

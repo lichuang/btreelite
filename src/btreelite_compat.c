@@ -328,6 +328,31 @@ void sqlite3ErrorMsg(Parse *pParse, const char *zFormat, ...){
   (void)pParse; (void)zFormat;
 }
 
+/* getSafetyLevel lives in the PRAGMA part of upstream, which this build
+** does not carry; sqlite3GetBoolean is only reachable through
+** sqlite3_uri_boolean with the URI keys btreelite users pass. */
+int sqlite3GetBoolean(const char *z, int dflt){
+  return z!=0 && (strcmp(z,"1")==0 || strcasecmp(z,"yes")==0
+                  || strcmp(z,"on")==0 || strcasecmp(z,"true")==0) ? 1
+               : (z!=0 && (strcmp(z,"0")==0 || strcasecmp(z,"no")==0
+                           || strcmp(z,"off")==0 || strcasecmp(z,"false")==0) ? 0 : dflt);
+}
+
+/*
+** Upstream compiles the sqlite3Memdebug* call sites to no-op macros
+** unless SQLITE_MEMDEBUG is defined; the pruned sources kept the call
+** sites as function calls, so the no-op stubs live here (identical
+** semantics to upstream's non-MEMDEBUG branch: SetType does nothing,
+** HasType/NoType always answer "yes"). */
+#ifdef sqlite3MemdebugSetType
+# undef sqlite3MemdebugSetType
+# undef sqlite3MemdebugHasType
+# undef sqlite3MemdebugNoType
+#endif
+void sqlite3MemdebugSetType(void *p, u8 eType){ (void)p; (void)eType; }
+int sqlite3MemdebugHasType(const void *p, u8 eType){ (void)p; (void)eType; return 1; }
+int sqlite3MemdebugNoType(const void *p, u8 eType){ (void)p; (void)eType; return 1; }
+
 /*
 ** Initialize / shutdown.  Phase 0-1 builds initialize eagerly via
 ** sqlite3_initialize() auto-init; the mutex/malloc/pcache subsystems are

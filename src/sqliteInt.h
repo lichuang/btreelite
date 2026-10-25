@@ -81,6 +81,7 @@ void sqlite3StrAccumInit(StrAccum*, sqlite3*, char*, int, int);
 char *sqlite3StrAccumFinish(StrAccum*);
 void sqlite3_str_append(sqlite3_str*, const char*, int);
 void sqlite3_str_appendf(sqlite3_str*, const char*, ...);
+void sqlite3_str_appendall(sqlite3_str*, const char*);
 void sqlite3_str_vappendf(sqlite3_str*, const char*, va_list);
 void sqlite3_str_reset(sqlite3_str*);
 void sqlite3_log(int, const char*, ...);
@@ -123,6 +124,12 @@ int sqlite3MemdebugNoType(const void*,u8);
 # define sqlite3MemdebugHasType(X,Y)  1
 # define sqlite3MemdebugNoType(X,Y)   1
 #endif
+
+/* Result codes and file-control ids used only by the SQLITE_DEBUG
+** diagnostic paths of os_unix.c (lock-description helpers) -- values
+** match the upstream definitions. */
+#define SQLITE_ERROR_UNABLE          (SQLITE_ERROR | (6<<8))
+#define SQLITE_FCNTL_FILESTAT        45
 
 #define LOOKASIDE_SMALL 128
 /* Same macros as btreeliteInt.h; guarded so TUs see one definition even
@@ -336,7 +343,8 @@ i64 sqlite3RealToI64(double);
 #define IOTRACE(X)
 #define OSTRACE(X)
 #define OS_VXWORKS 0
-#define SQLITE_FCNTL_NULL_IO 45
+#define SQLITE_FCNTL_NULL_IO 43      /* upstream value; 45 is FILESTAT */
+#define SQLITE_FCNTL_FILESTAT        45
 #define SQLITE_FCNTL_EXTERNAL_READER 46
 #define SQLITE_FCNTL_GET_LOCKPROXYFILE_UNUSED 0
 char *sqlite3_mprintf(const char*, ...);
