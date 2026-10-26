@@ -743,8 +743,15 @@ int btreelite_integrity_check(btreelite_db *p, unsigned iRoot, int mxErr,
 ** and page-cache for this connection in the single-connection case.
 */
 int btreelite_mem_used(btreelite_db *p){
+  int n;
   if( p==0 ) return BTREELITE_ERROR;
-  return (int)sqlite3StatusValue(SQLITE_STATUS_MEMORY_USED);
+  /* SQLITE_DEBUG builds assert the caller holds the malloc mutex; the
+  ** single-threaded btreelite contract (one handle, one thread) makes
+  ** taking it around the read sufficient and upstream-equivalent. */
+  sqlite3_mutex_enter(sqlite3MallocMutex());
+  n = (int)sqlite3StatusValue(SQLITE_STATUS_MEMORY_USED);
+  sqlite3_mutex_leave(sqlite3MallocMutex());
+  return n;
 }
 /*
 ** Select the synchronization level used to commit transactions and

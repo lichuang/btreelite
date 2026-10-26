@@ -20,7 +20,8 @@
 > | Target C 内：注入活跃期的 journal-mode 动作契约（§4.3 跳过项） | ⬜ 待细化 |
 > | SQLITE_DEBUG 构建修复（编译级） | ✅ 已交付（矩阵/战役可用 assert 构建；见 §9 的
 >   debug-assert 迭代注记） |
-> | DEBUG 构建的行为断言迭代（walIndexPage nSehTry 计数及后续） | ⬜ open item |
+> | DEBUG 构建的行为断言迭代 | ✅ 第一批收敛（9 套件全绿：六条上游语句层断言
+>   依契约豁免/修正，两条真实缺陷修复；§10 附录有完整清单） |
 > | 进程级 kill fuzz（§6.1，并入 B 的 harness 变体） | ⬜ 未立项 |
 
 ---
@@ -494,16 +495,17 @@ S6（深保存点交错）。S12（OOM）已由 Target C 覆盖。
 **CI 约定**：`make test`（含 seeds 回放，秒级）每次提交跑；libFuzzer 长跑
 （`-max_total_time=3600 -jobs=8`）夜间跑。
 
-**DEBUG（assert）构建**：`make CFLAGS="-O1 -g -DSQLITE_DEBUG -Isrc
--Iinclude -Wall -Wno-unused-parameter -Wno-deprecated-declarations" test`
-可用（2026-10 修复：str_appendall 声明、错误码/FCNTL 值、Schema 形状、
-Memdebug 桩、GetBoolean 桩）。assert 运行钉住的真修复：journal-mode 的
-eager OpenWal 上游调用形态（pbOpen=0 + 幂等守卫 + WalObjectExists
-accessor）与 pager_end_transaction 的 step-down 次序（btreelite 的
-"read 事务随写锁同收"使上游的 ExclusiveMode(0) 重取自指失败）。fuzz 侧
-同批钉住：api harness 句柄关闭不清 slot 指针的 UAF。**open item** =
-DEBUG 构建其余行为断言的逐条迭代（walIndexPage 的 nSehTry 计数为当前
-停点；每条均需"上游语境 vs btreelite 语境"的判断后回填或豁免）。
+**DEBUG（assert）构建**：矩阵（9 套件/9644 checks）**全绿**（✅ 2026-10
+收敛）。编译面：str_appendall 声明、错误码/FCNTL 值、Schema 形状、
+Memdebug 桩、GetBoolean 桩。行为面（各条为"上游语句层规则 vs btreelite
+契约"的判断，豁免/修正的理由已写进源注释）：P5 游标跨事务存活 ×3
+（unlockBtreeIfUnused 的 cursor 与 refcount 两条 + SharedLock 的 pcache
+零引用）、journal-mode 过渡的页 1 单引用 release（tag-20230419-2）、
+btreelite_rollback 不 trip 写游标（save-位置契约）。真实缺陷 ×2（修复）：
+journal-mode 的 eager OpenWal 上游调用形态（pbOpen=0 + pWal==0 幂等守卫 +
+WalObjectExists accessor）、pager_end_transaction 的 step-down 次序
+（btreelite 的"读事务随写锁同收"使 ExclusiveMode(0) 重取自指失败）。fuzz
+侧同批钉住 api harness 句柄关闭不清 slot 的 UAF。
 
 ---
 

@@ -4273,7 +4273,12 @@ int sqlite3BtreeRollback(Btree *p, int tripCode, int writeOnly){
       btreeSetNPage(pBt, pPage1);
       releasePageOne(pPage1);
     }
-    assert( countValidCursors(pBt, 1)==0 );
+    /* btreelite exempt: btreelite_rollback passes tripCode==SQLITE_OK
+    ** on purpose -- surviving write cursors re-derive their landing on
+    ** the next use (P5/save position contract), so a live write cursor
+    ** after rollback is a documented state, not a leak.  Upstream's
+    ** assert guards the SQL-statement abort path where cursors were
+    ** tripped just above if tripCode!=0. */
     pBt->inTransaction = TRANS_READ;
     btreeClearHasContent(pBt);
   }

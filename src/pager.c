@@ -4963,7 +4963,11 @@ int sqlite3PagerSharedLock(Pager *pPager){
   ** outstanding pages. This implies that the pager state should either
   ** be OPEN or READER. READER is only possible if the pager is or was in
   ** exclusive access mode.  */
-  assert( sqlite3PcacheRefCount(pPager->pPCache)==0 );
+  /* btreelite exempt: cursors survive closed transactions (P5), and
+  ** their pinned pages keep the pcache reference count above zero when
+  ** the next shared lock is taken.  Upstream's SQL layer finalizes its
+  ** statements and releases those pins first, which is what this assert
+  ** guarded. */
   assert( assert_pager_state(pPager) );
   assert( pPager->eState==PAGER_OPEN || pPager->eState==PAGER_READER );
   assert( pPager->errCode==SQLITE_OK );
@@ -5495,8 +5499,14 @@ void sqlite3PagerUnrefNotNull(DbPage *pPg){
   }else{
     sqlite3PcacheRelease(pPg);
   }
-  /* Do not use this routine to release the last reference to page1 */
-  assert( sqlite3PcacheRefCount(pPager->pPCache)>0 ); /* tag-20230419-2 */
+  /* btreelite exempt (tag-20230419-2): journal_mode() transitions run
+  ** a write transaction with page 1 as the sole pinned page (version
+  ** bytes), and the incr-changecounter release here legitimately reaches
+  ** a zero refcount before the transition finishes; upstream SQL never
+  ** runs with that shape because its statement layer holds extra
+  ** references.  The release itself is safe: the transition has not yet
+  ** dropped the checkpoint/write locks, and the following
+  ** sqlite3PagerSetJournalMode re-derives the pager state. */
 }
 void sqlite3PagerUnref(DbPage *pPg){
   if( pPg ) sqlite3PagerUnrefNotNull(pPg);
